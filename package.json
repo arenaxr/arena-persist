@@ -11,10 +11,10 @@
   "dependencies": {
     "async-mqtt": "^2.4.2",
     "express": "^4.17.1",
-    "mongoose": "^5.7.3"
+    "mongoose": "^5.7.7"
   },
   "devDependencies": {
-    "@babel/preset-env": "^7.6.2",
+    "@babel/preset-env": "^7.6.3",
     "babel-cli": "^6.26.0",
     "babel-core": "^6.26.3"
   }
