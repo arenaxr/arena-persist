@@ -1,7 +1,7 @@
 const config = require('./config.json');
 const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
-
+const express = require('express');
 
 mongoose.connect(config.mongodb.uri, {useNewUrlParser: true, useFindAndModify: false, useCreateIndex: true });
 const db = mongoose.connection;
@@ -17,7 +17,7 @@ const arenaSchema = new mongoose.Schema({
     createdAt: Date,
     lastUpdated: Date,
     realm:  { type: String, index: true },
-    scene:  { type: String, index: true },
+    sceneId:  { type: String, index: true },
 });
 
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
@@ -38,8 +38,9 @@ async function runMQTT() {
             - 1: type [s, n, r, topology, flows]
             - 2: scene_id
             */
+            let msgJSON = undefined;
             try {
-                let msgJSON = JSON.parse(message.toString())
+                msgJSON = JSON.parse(message.toString())
             } catch(e) {
                 return;
             }
@@ -48,7 +49,7 @@ async function runMQTT() {
                 attributes: msgJSON.data,
                 last_updated: msgJSON.timestamp,
                 realm: topicSplit[0],
-                scene: topicSplit[2]
+                sceneId: topicSplit[2]
             });
             // TODO : add schema for pubsub message with catch on invalid format
             switch (msgJSON.action) {
@@ -64,6 +65,9 @@ async function runMQTT() {
                     break;
                 case "update":
                     let currentObj = await ArenaObject.findOne({ object_id: arenaObj.object_id });
+                    if (!currentObj) {
+                        return;
+                    }
                     let dataUpdate = {};
                     if (msgJSON.type === "overwrite") {
                         dataUpdate = arenaObj.attributes;
@@ -97,3 +101,11 @@ async function runMQTT() {
     }
 }
 
+const app = express();
+app.get('/:sceneId', (req, res) => {
+    ArenaObject.find({sceneId: req.params.sceneId}, {_id: 0, realm: 0, sceneId: 0, __v: 0}).then( msgs => {
+      res.json(msgs);
+    });
+});
+
+app.listen(8884);
