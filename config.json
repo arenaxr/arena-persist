@@ -1,8 +1,8 @@
 {
     "mqtt": {
         "uri": "tcp://oz.andrew.cmu.edu",
-        "topic": "/jsontest/#",
-        "statusTopic": "/service_logger"
+        "topic_realm": "realm",
+        "statusTopic": "/service_status"
     },
     "mongodb": {
         "uri": "mongodb://localhost/arena_persist"
