@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const config = require('./config.json');
 const mongoose = require('mongoose');
@@ -10,12 +10,12 @@ mongoose.connect(config.mongodb.uri, {
     useFindAndModify: false,
     useCreateIndex: true,
     useUnifiedTopology: true
-});
-const db = mongoose.connection;
-db.on('error', console.error.bind(console, 'Mongodb connection error:'));
-db.once('open', () => {
-    console.log("Connected to Mongodb");
+}).then(() => {
+    console.log('Connected to Mongodb');
     runMQTT();
+    runExpress();
+}, err => {
+    console.log('Mongodb Connection Error: ', err);
 });
 
 const arenaSchema = new mongoose.Schema({
@@ -31,23 +31,23 @@ const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
 
 async function runMQTT() {
     const mqttClient = await mqtt.connectAsync(config.mqtt.uri);
-    const SCENE_TOPICS = config.mqtt.topic_realm + "/s/#";
-    console.log("Connected to MQTT");
+    const SCENE_TOPICS = config.mqtt.topic_realm + '/s/#';
+    console.log('Connected to MQTT');
     try {
         await mqttClient.subscribe(SCENE_TOPICS).then(() => {
             mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
         });
         mqttClient.on('message', async (topic, message) => {
-            let topicSplit = topic.split("/");
+            let topicSplit = topic.split('/');
             /*
             Topic tokens by forward slash:
             - 0: realm
             - 1: type [s, n, r, topology, flows]
             - 2: scene_id
             */
-            let msgJSON = undefined;
+            let msgJSON;
             try {
-                msgJSON = JSON.parse(message.toString())
+                msgJSON = JSON.parse(message.toString());
             } catch (e) {
                 return;
             }
@@ -63,42 +63,42 @@ async function runMQTT() {
             });
             // TODO : add schema for pubsub message with catch on invalid format
             switch (msgJSON.action) {
-                case "create":
+                case 'create':
                     await ArenaObject.find({object_id: arenaObj.object_id}, (err, res) => {
                         if (res.length === 0) {
                             arenaObj.createdAt = arenaObj.last_updated;
                             arenaObj.save();
                         } else {
-                            console.log("Already exists:", arenaObj.object_id)
+                            console.log('Already exists:', arenaObj.object_id);
                         }
                     });
                     break;
-                case "update":
+                case 'update':
                     let currentObj = await ArenaObject.findOne({object_id: arenaObj.object_id});
                     if (!currentObj) {
                         return;
                     }
                     let dataUpdate = {};
-                    if (msgJSON.type === "overwrite") {
+                    if (msgJSON.type === 'overwrite') {
                         dataUpdate = arenaObj.attributes;
                     } else {
-                        dataUpdate = new Map([...currentObj.attributes, ...arenaObj.attributes])
+                        dataUpdate = new Map([...currentObj.attributes, ...arenaObj.attributes]);
                     }
                     await ArenaObject.findOneAndUpdate(
                         {object_id: arenaObj.object_id},
                         {attributes: dataUpdate, last_updated: arenaObj.timestamp},
                         {},
-                        (err, res) => {
+                        (err) => {
                             if (err) {
-                                console.log("Doesn't exist!");
+                                console.log('Does not exist!');
                             }
                         }
                     );
                     break;
-                case "delete":
-                    await ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err, res) => {
+                case 'delete':
+                    await ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err) => {
                         if (err) {
-                            console.log("Doesn't exist or Already deleted")
+                            console.log('Does not exist or already deleted');
                         }
                     });
                     break;
@@ -111,11 +111,12 @@ async function runMQTT() {
     }
 }
 
-const app = express();
-app.get('/:sceneId', (req, res) => {
-    ArenaObject.find({sceneId: req.params.sceneId}, {_id: 0, realm: 0, sceneId: 0, __v: 0}).then(msgs => {
-        res.json(msgs);
+const runExpress = () => {
+    const app = express();
+    app.get('/:sceneId', (req, res) => {
+        ArenaObject.find({sceneId: req.params.sceneId}, {_id: 0, realm: 0, sceneId: 0, __v: 0}).then(msgs => {
+            res.json(msgs);
+        });
     });
-});
-
-app.listen(8884);
+    app.listen(8884);
+};
