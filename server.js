@@ -96,7 +96,7 @@ async function runMQTT() {
                         {},
                         (err) => {
                             if (err) {
-                                console.log('Does not exist!');
+                                console.log('Does not exist:', arenaObj.object_id);
                             }
                         }
                     );
@@ -104,7 +104,7 @@ async function runMQTT() {
                 case 'delete':
                     await ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err) => {
                         if (err) {
-                            console.log('Does not exist or already deleted');
+                            console.log('Does not exist or already deleted:', arenaObj.object_id);
                         }
                     });
                     break;
