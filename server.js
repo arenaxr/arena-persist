@@ -42,7 +42,7 @@ async function runMQTT() {
     console.log('Connected to MQTT');
     try {
         await mqttClient.subscribe(SCENE_TOPICS, {
-            qos: 1
+            qos: 2
         }).then(() => {
             mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
         });
