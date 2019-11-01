@@ -30,7 +30,14 @@ const arenaSchema = new mongoose.Schema({
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
 
 async function runMQTT() {
-    const mqttClient = await mqtt.connectAsync(config.mqtt.uri);
+    const mqttClient = await mqtt.connectAsync(config.mqtt.uri, {
+        clientId: 'arena_persist_' + config.mqtt.topic_realm,
+        clean: false, // Receive QoS 2 messages (object delete) always
+        will: {
+            topic: config.mqtt.statusTopic,
+            payload: 'Persistence service disconnected: ' + config.mqtt.topic_realm
+        }
+    });
     const SCENE_TOPICS = config.mqtt.topic_realm + '/s/#';
     console.log('Connected to MQTT');
     try {
