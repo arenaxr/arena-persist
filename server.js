@@ -51,9 +51,6 @@ async function runMQTT() {
             } catch (e) {
                 return;
             }
-            if (msgJSON.persist === false) {
-                return;
-            }
             let arenaObj = new ArenaObject({
                 object_id: msgJSON.object_id,
                 attributes: msgJSON.data,
@@ -64,14 +61,16 @@ async function runMQTT() {
             // TODO : add schema for pubsub message with catch on invalid format
             switch (msgJSON.action) {
                 case 'create':
-                    await ArenaObject.find({object_id: arenaObj.object_id}, (err, res) => {
-                        if (res.length === 0) {
-                            arenaObj.createdAt = arenaObj.last_updated;
-                            arenaObj.save();
-                        } else {
-                            console.log('Already exists:', arenaObj.object_id);
-                        }
-                    });
+                    if (msgJSON.persist === true) {
+                        await ArenaObject.find({object_id: arenaObj.object_id}, (err, res) => {
+                            if (res.length === 0) {
+                                arenaObj.createdAt = arenaObj.last_updated;
+                                arenaObj.save();
+                            } else {
+                                console.log('Already exists:', arenaObj.object_id);
+                            }
+                        });
+                    }
                     break;
                 case 'update':
                     let currentObj = await ArenaObject.findOne({object_id: arenaObj.object_id});
