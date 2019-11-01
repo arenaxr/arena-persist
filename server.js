@@ -44,6 +44,9 @@ async function runMQTT() {
             } catch(e) {
                 return;
             }
+            if (msgJSON.persist === false) {
+                return;
+            }
             let arenaObj = new ArenaObject({
                 object_id: msgJSON.object_id,
                 attributes: msgJSON.data,
@@ -59,7 +62,7 @@ async function runMQTT() {
                             arenaObj.createdAt = arenaObj.last_updated;
                             arenaObj.save();
                         } else {
-                            console.log("Already exists")
+                            console.log("Already exists:", arenaObj.object_id)
                         }
                     });
                     break;
