@@ -3,7 +3,12 @@ const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
 const express = require('express');
 
-mongoose.connect(config.mongodb.uri, {useNewUrlParser: true, useFindAndModify: false, useCreateIndex: true });
+mongoose.connect(config.mongodb.uri, {
+    useNewUrlParser: true,
+    useFindAndModify: false,
+    useCreateIndex: true,
+    useUnifiedTopology: true
+});
 const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'Mongodb connection error:'));
 db.once('open', () => {
