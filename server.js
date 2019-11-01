@@ -10,9 +10,9 @@ mongoose.connect(config.mongodb.uri, {
     useFindAndModify: false,
     useCreateIndex: true,
     useUnifiedTopology: true
-}).then(() => {
+}).then(async () => {
     console.log('Connected to Mongodb');
-    runMQTT();
+    await runMQTT();
     runExpress();
 }, err => {
     console.log('Mongodb Connection Error: ', err);
@@ -41,7 +41,9 @@ async function runMQTT() {
     const SCENE_TOPICS = config.mqtt.topic_realm + '/s/#';
     console.log('Connected to MQTT');
     try {
-        await mqttClient.subscribe(SCENE_TOPICS).then(() => {
+        await mqttClient.subscribe(SCENE_TOPICS, {
+            qos: 1
+        }).then(() => {
             mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
         });
         mqttClient.on('message', async (topic, message) => {
