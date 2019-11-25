@@ -22,8 +22,8 @@ mongoose.connect(config.mongodb.uri, {
 const arenaSchema = new mongoose.Schema({
     object_id: {type: String, index: true, unique: true},
     attributes: Map,
-    createdAt: Date,
     lastUpdated: Date,
+    expireAt: Date,
     realm: {type: String, index: true},
     sceneId: {type: String, index: true},
 });
@@ -66,6 +66,7 @@ async function runMQTT() {
                 object_id: msgJSON.object_id,
                 attributes: msgJSON.data,
                 lastUpdated: msgJSON.timestamp,
+                expireAt: msgJSON.expire,
                 realm: topicSplit[0],
                 sceneId: topicSplit[2]
             });
@@ -75,7 +76,6 @@ async function runMQTT() {
                     if (msgJSON.persist === true) {
                         await ArenaObject.find({object_id: arenaObj.object_id}, (err, res) => {
                             if (res.length === 0) {
-                                arenaObj.createdAt = arenaObj.lastUpdated;
                                 arenaObj.save();
                             } else {
                                 console.log('Already exists:', arenaObj.object_id);
