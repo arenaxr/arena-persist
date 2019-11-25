@@ -65,7 +65,7 @@ async function runMQTT() {
             let arenaObj = new ArenaObject({
                 object_id: msgJSON.object_id,
                 attributes: msgJSON.data,
-                lastUpdated: msgJSON.timestamp,
+                lastUpdated: new Date(),
                 expireAt: msgJSON.expire,
                 realm: topicSplit[0],
                 sceneId: topicSplit[2]
@@ -100,7 +100,7 @@ async function runMQTT() {
                     }
                     await ArenaObject.findOneAndUpdate(
                         {object_id: arenaObj.object_id},
-                        {attributes: dataUpdate, lastUpdated: arenaObj.timestamp},
+                        {attributes: dataUpdate, lastUpdated: new Date()},
                         {},
                         (err) => {
                             if (err) {
