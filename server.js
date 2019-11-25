@@ -65,7 +65,7 @@ async function runMQTT() {
             let arenaObj = new ArenaObject({
                 object_id: msgJSON.object_id,
                 attributes: msgJSON.data,
-                last_updated: msgJSON.timestamp,
+                lastUpdated: msgJSON.timestamp,
                 realm: topicSplit[0],
                 sceneId: topicSplit[2]
             });
@@ -75,7 +75,7 @@ async function runMQTT() {
                     if (msgJSON.persist === true) {
                         await ArenaObject.find({object_id: arenaObj.object_id}, (err, res) => {
                             if (res.length === 0) {
-                                arenaObj.createdAt = arenaObj.last_updated;
+                                arenaObj.createdAt = arenaObj.lastUpdated;
                                 arenaObj.save();
                             } else {
                                 console.log('Already exists:', arenaObj.object_id);
@@ -96,7 +96,7 @@ async function runMQTT() {
                     }
                     await ArenaObject.findOneAndUpdate(
                         {object_id: arenaObj.object_id},
-                        {attributes: dataUpdate, last_updated: arenaObj.timestamp},
+                        {attributes: dataUpdate, lastUpdated: arenaObj.timestamp},
                         {},
                         (err) => {
                             if (err) {
