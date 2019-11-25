@@ -70,23 +70,27 @@ async function runMQTT() {
                 realm: topicSplit[0],
                 sceneId: topicSplit[2]
             });
+            let currentObj;
             // TODO : add schema for pubsub message with catch on invalid format
             switch (msgJSON.action) {
+                /* jshint ignore:start */
                 case 'create':
                     if (msgJSON.persist === true) {
-                        await ArenaObject.find({object_id: arenaObj.object_id}, (err, res) => {
-                            if (res.length === 0) {
-                                arenaObj.save();
-                            } else {
-                                console.log('Already exists:', arenaObj.object_id);
-                            }
-                        });
+                        currentObj = await ArenaObject.findOne({object_id: arenaObj.object_id});
+                        if (!currentObj) {
+                            await arenaObj.save();
+                            return;
+                        } else {
+                            //fall-through to update
+                        }
                     }
-                    break;
+                /* jshint ignore:end */
                 case 'update':
-                    let currentObj = await ArenaObject.findOne({object_id: arenaObj.object_id});
-                    if (!currentObj) {
-                        return;
+                    if (!currentObj) {  // Fall through?
+                        currentObj = await ArenaObject.findOne({object_id: arenaObj.object_id});
+                        if (!currentObj) {
+                            return;
+                        }
                     }
                     let dataUpdate = {};
                     if (msgJSON.type === 'overwrite') {
