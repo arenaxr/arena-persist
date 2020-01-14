@@ -30,8 +30,12 @@ const arenaSchema = new mongoose.Schema({
 
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
 
+let mqttClient;
+let expirations;
+let expireTimer;
+
 async function runMQTT() {
-    const mqttClient = await mqtt.connectAsync(config.mqtt.uri, {
+     mqttClient = await mqtt.connectAsync(config.mqtt.uri, {
         clientId: 'arena_persist_' + config.mqtt.topic_realm,
         clean: false, // Receive QoS 1+ messages (object delete) always
         qos: 1,
@@ -47,6 +51,11 @@ async function runMQTT() {
             qos: 1
         }).then(() => {
             mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
+            expirations = new Map();
+            expireTimer = setInterval(publishExpires, 1000);
+        });
+        mqttClient.on('offline', () => {
+            clearInterval(expireTimer);
         });
         mqttClient.on('message', async (topic, message) => {
             let topicSplit = topic.split('/');
@@ -79,6 +88,9 @@ async function runMQTT() {
                         currentObj = await ArenaObject.findOne({object_id: arenaObj.object_id});
                         if (!currentObj) {
                             await arenaObj.save();
+                            if (arenaObj.expireAt) {
+                                expirations.set(arenaObj.object_id, arenaObj);
+                            }
                             return;
                         } else {
                             //fall-through to update
@@ -108,6 +120,11 @@ async function runMQTT() {
                             }
                         }
                     );
+                    if (arenaObj.expireAt) {
+                        expirations.add(arenaObj);
+                    } else if (expirations.has(arenaObj.object_id)) {
+                        expirations.set(arenaObj.object_id, arenaObj);
+                    }
                     break;
                 case 'delete':
                     await ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err) => {
@@ -124,6 +141,22 @@ async function runMQTT() {
         console.log(e.stack);
     }
 }
+
+const publishExpires = async () => {
+    let now = new Date();
+    expirations.forEach((obj, key) => {
+        if (obj.expireAt < now) {
+            let topic = obj.realm + '/s/' + obj.sceneId;
+            let msg = {
+                object_id: obj.object_id,
+                action: 'delete'
+            };
+            mqttClient.publish(topic, JSON.stringify(msg));
+            expirations.delete(key);
+        }
+    });
+};
+
 
 const runExpress = () => {
     const app = express();
