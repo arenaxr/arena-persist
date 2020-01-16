@@ -71,11 +71,16 @@ async function runMQTT() {
             } catch (e) {
                 return;
             }
+            let now = new Date();
+            let expireAt;
+            if (msgJSON.ttl) {
+                expireAt = new Date(now.getTime() + (msgJSON.ttl * 1000));
+            }
             let arenaObj = new ArenaObject({
                 object_id: msgJSON.object_id,
                 attributes: msgJSON.data,
-                lastUpdated: new Date(),
-                expireAt: msgJSON.expire,
+                lastUpdated: now,
+                expireAt: expireAt,
                 realm: topicSplit[0],
                 sceneId: topicSplit[2]
             });
@@ -88,7 +93,7 @@ async function runMQTT() {
                         currentObj = await ArenaObject.findOne({object_id: arenaObj.object_id});
                         if (!currentObj) {
                             await arenaObj.save();
-                            if (arenaObj.expireAt) {
+                            if (expireAt) {
                                 expirations.set(arenaObj.object_id, arenaObj);
                             }
                             return;
@@ -120,10 +125,8 @@ async function runMQTT() {
                             }
                         }
                     );
-                    if (arenaObj.expireAt) {
-                        expirations.add(arenaObj);
-                    } else if (expirations.has(arenaObj.object_id)) {
-                        expirations.set(arenaObj.object_id, arenaObj);
+                    if (expireAt) {
+                       expirations.set(arenaObj.object_id, arenaObj);
                     }
                     break;
                 case 'delete':
