@@ -23,7 +23,7 @@ const arenaSchema = new mongoose.Schema({
     object_id: {type: String, index: true, unique: true},
     attributes: Map,
     lastUpdated: Date,
-    expireAt: Date,
+    expireAt: { type: Date, expires: 0 },
     realm: {type: String, index: true},
     sceneId: {type: String, index: true},
 });
@@ -46,6 +46,23 @@ async function runMQTT() {
     });
     const SCENE_TOPICS = config.mqtt.topic_realm + '/s/#';
     console.log('Connected to MQTT');
+    mqttClient.on('offline', () => {
+        clearInterval(expireTimer);
+        console.log('offline, timer off');
+    });
+    mqttClient.on('reconnect', () => {
+        console.log('reconnect');
+    });
+    mqttClient.on('connect', () => {
+        console.log('connect');
+    });
+    mqttClient.on('disconnect', () => {
+        console.log('disconnect');
+    });
+    mqttClient.on('error', (err) => {
+        console.log('error');
+        console.log(err);
+    });
     try {
         await mqttClient.subscribe(SCENE_TOPICS, {
             qos: 1
@@ -53,9 +70,7 @@ async function runMQTT() {
             mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
             expirations = new Map();
             expireTimer = setInterval(publishExpires, 1000);
-        });
-        mqttClient.on('offline', () => {
-            clearInterval(expireTimer);
+            console.log('timer on, subscribed');
         });
         mqttClient.on('message', async (topic, message) => {
             let topicSplit = topic.split('/');
@@ -66,78 +81,77 @@ async function runMQTT() {
             - 2: scene_id
             */
             let msgJSON;
-            try {
-                msgJSON = JSON.parse(message.toString());
-            } catch (e) {
-                return;
-            }
+            let arenaObj;
             let now = new Date();
             let expireAt;
-            if (msgJSON.ttl) {
-                expireAt = new Date(now.getTime() + (msgJSON.ttl * 1000));
+            try {
+                msgJSON = JSON.parse(message.toString());
+                if (msgJSON.ttl) {
+                    expireAt = new Date(now.getTime() + (msgJSON.ttl * 1000));
+                }
+                arenaObj = new ArenaObject({
+                    object_id: msgJSON.object_id,
+                    attributes: msgJSON.data,
+                    lastUpdated: now,
+                    expireAt: expireAt,
+                    realm: topicSplit[0],
+                    sceneId: topicSplit[2]
+                });
+            } catch(e) {
+                return;
             }
-            let arenaObj = new ArenaObject({
-                object_id: msgJSON.object_id,
-                attributes: msgJSON.data,
-                lastUpdated: now,
-                expireAt: expireAt,
-                realm: topicSplit[0],
-                sceneId: topicSplit[2]
-            });
-            let currentObj;
-            // TODO : add schema for pubsub message with catch on invalid format
             switch (msgJSON.action) {
-                /* jshint ignore:start */
                 case 'create':
                     if (msgJSON.persist === true) {
-                        currentObj = await ArenaObject.findOne({object_id: arenaObj.object_id});
-                        if (!currentObj) {
-                            await arenaObj.save();
-                            if (expireAt) {
-                                expirations.set(arenaObj.object_id, arenaObj);
-                            }
-                            return;
-                        } else {
-                            //fall-through to update
+                        ArenaObject.findOneAndUpdate({object_id: arenaObj.object_id}, arenaObj.toObject(), {
+                            upsert: true,
+                            runValidators: true
+                        });
+                        if (expireAt) {
+                            expirations.set(arenaObj.object_id, arenaObj);
                         }
                     }
-                /* jshint ignore:end */
+                    break;
                 case 'update':
-                    if (!currentObj) {  // Fall through?
-                        currentObj = await ArenaObject.findOne({object_id: arenaObj.object_id});
-                        if (!currentObj) {
-                            return;
-                        }
-                    }
-                    let dataUpdate = {};
                     if (msgJSON.type === 'overwrite') {
-                        dataUpdate = arenaObj.attributes;
-                    } else {
-                        dataUpdate = new Map([...currentObj.attributes, ...arenaObj.attributes]);
-                    }
-                    await ArenaObject.findOneAndUpdate(
-                        {object_id: arenaObj.object_id},
-                        {attributes: dataUpdate, lastUpdated: new Date()},
-                        {},
-                        (err) => {
-                            if (err) {
-                                console.log('Does not exist:', arenaObj.object_id);
+                        ArenaObject.findOneAndReplace(
+                            {object_id: arenaObj.object_id},
+                            arenaObj.toJSON(),
+                            {},
+                            (err) => {
+                                if (err) {
+                                    console.log('Does not exist:', arenaObj.object_id);
+                                }
                             }
-                        }
-                    );
+                        );
+                    } else {
+                        ArenaObject.findOneAndUpdate(
+                            {object_id: arenaObj.object_id},
+                            {attributes: arenaObj.attributes, lastUpdated: now},
+                            {},
+                            (err) => {
+                                if (err) {
+                                    console.log('Does not exist:', arenaObj.object_id);
+                                }
+                            }
+                        );
+                    }
                     if (expireAt) {
                        expirations.set(arenaObj.object_id, arenaObj);
                     }
                     break;
                 case 'delete':
-                    await ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err) => {
+                    ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err) => {
                         if (err) {
                             console.log('Does not exist or already deleted:', arenaObj.object_id);
                         }
                     });
+                    if (expirations.has(arenaObj.object_id)) {
+                        expirations.delete(arenaObj.object_id);
+                    }
                     break;
                 default:
-                //pass
+                    //pass
             }
         });
     } catch (e) {
@@ -145,7 +159,7 @@ async function runMQTT() {
     }
 }
 
-const publishExpires = async () => {
+const publishExpires = () => {
     let now = new Date();
     expirations.forEach((obj, key) => {
         if (obj.expireAt < now) {
@@ -154,6 +168,7 @@ const publishExpires = async () => {
                 object_id: obj.object_id,
                 action: 'delete'
             };
+            console.log('expiring ' + obj.object_id);
             mqttClient.publish(topic, JSON.stringify(msg));
             expirations.delete(key);
         }
