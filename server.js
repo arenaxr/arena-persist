@@ -88,6 +88,7 @@ async function runMQTT() {
                 msgJSON = JSON.parse(message.toString());
                 if (msgJSON.ttl) {
                     expireAt = new Date(now.getTime() + (msgJSON.ttl * 1000));
+                    msgJSON.persist = true;
                 }
                 arenaObj = new ArenaObject({
                     object_id: msgJSON.object_id,
