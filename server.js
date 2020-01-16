@@ -70,7 +70,6 @@ async function runMQTT() {
             mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
             expirations = new Map();
             expireTimer = setInterval(publishExpires, 1000);
-            console.log('timer on, subscribed');
         });
         mqttClient.on('message', async (topic, message) => {
             let topicSplit = topic.split('/');
@@ -169,7 +168,6 @@ const publishExpires = () => {
                 object_id: obj.object_id,
                 action: 'delete'
             };
-            console.log('expiring ' + obj.object_id);
             mqttClient.publish(topic, JSON.stringify(msg));
             expirations.delete(key);
         }
