@@ -22,10 +22,11 @@ mongoose.connect(config.mongodb.uri, {
 const arenaSchema = new mongoose.Schema({
     object_id: {type: String, index: true, unique: true},
     attributes: Map,
-    lastUpdated: Date,
     expireAt: { type: Date, expires: 0 },
     realm: {type: String, index: true},
     sceneId: {type: String, index: true},
+},{
+    timestamps: true
 });
 
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
@@ -92,7 +93,6 @@ async function runMQTT() {
                 arenaObj = new ArenaObject({
                     object_id: msgJSON.object_id,
                     attributes: msgJSON.data,
-                    lastUpdated: now,
                     expireAt: expireAt,
                     realm: topicSplit[0],
                     sceneId: topicSplit[2]
@@ -103,7 +103,9 @@ async function runMQTT() {
             switch (msgJSON.action) {
                 case 'create':
                     if (msgJSON.persist === true) {
-                        ArenaObject.findOneAndUpdate({object_id: arenaObj.object_id}, arenaObj.toObject(), {
+                        let insertObj = arenaObj.toObject();
+                        delete insertObj._id;
+                        await ArenaObject.findOneAndUpdate({object_id: arenaObj.object_id}, insertObj, {
                             upsert: true,
                             runValidators: true
                         });
@@ -127,7 +129,7 @@ async function runMQTT() {
                     } else {
                         ArenaObject.findOneAndUpdate(
                             {object_id: arenaObj.object_id},
-                            {attributes: arenaObj.attributes, lastUpdated: now},
+                            {attributes: arenaObj.attributes},
                             {},
                             (err) => {
                                 if (err) {
