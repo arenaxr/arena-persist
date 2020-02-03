@@ -100,11 +100,11 @@ async function runMQTT() {
             } catch(e) {
                 return;
             }
+            let insertObj = arenaObj.toObject();
+            delete insertObj._id;
             switch (msgJSON.action) {
                 case 'create':
                     if (msgJSON.persist === true) {
-                        let insertObj = arenaObj.toObject();
-                        delete insertObj._id;
                         await ArenaObject.findOneAndUpdate({object_id: arenaObj.object_id}, insertObj, {
                             upsert: true,
                             runValidators: true
@@ -117,8 +117,8 @@ async function runMQTT() {
                 case 'update':
                     if (msgJSON.type === 'overwrite') {
                         ArenaObject.findOneAndReplace(
-                            {object_id: arenaObj.object_id},
-                            arenaObj.toJSON(),
+                            {object_id: insertObj.object_id},
+                            insertObj,
                             {},
                             (err) => {
                                 if (err) {
@@ -129,7 +129,7 @@ async function runMQTT() {
                     } else {
                         ArenaObject.findOneAndUpdate(
                             {object_id: arenaObj.object_id},
-                            {attributes: arenaObj.attributes},
+                            { $set: flatten({attributes: insertObj.attributes})},
                             {},
                             (err) => {
                                 if (err) {
@@ -174,6 +174,20 @@ const publishExpires = () => {
             expirations.delete(key);
         }
     });
+};
+
+
+let isPlainObj = (o) => Boolean(
+    o && o.constructor && o.constructor.prototype && o.constructor.prototype.hasOwnProperty('isPrototypeOf')
+);
+
+let flatten = (obj, keys=[]) => {
+    return Object.keys(obj).reduce((acc, key) => {
+        return Object.assign(acc, isPlainObj(obj[key])
+            ? flatten(obj[key], keys.concat(key))
+            : {[keys.concat(key).join('.')]: obj[key]}
+        );
+    }, {});
 };
 
 
