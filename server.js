@@ -6,19 +6,6 @@ const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
 const express = require('express');
 
-mongoose.connect(config.mongodb.uri, {
-    useNewUrlParser: true,
-    useFindAndModify: false,
-    useCreateIndex: true,
-    useUnifiedTopology: true
-}).then(async () => {
-    console.log('Connected to Mongodb');
-    await runMQTT();
-    runExpress();
-}, err => {
-    console.log('Mongodb Connection Error: ', err);
-});
-
 const arenaSchema = new mongoose.Schema({
     object_id: {type: String, index: true, unique: true},
     attributes: Map,
@@ -32,12 +19,28 @@ const arenaSchema = new mongoose.Schema({
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
 
 let mqttClient;
+let persists = new Set();
 let expirations;
 let expireTimer;
 
+mongoose.connect(config.mongodb.uri, {
+    useNewUrlParser: true,
+    useFindAndModify: false,
+    useCreateIndex: true,
+    useUnifiedTopology: true
+}).then(async () => {
+    console.log('Connected to Mongodb');
+    persists = new Set((await ArenaObject.find({}, {'object_id': 1, '_id': 0})).map(o => o.object_id));
+    await runMQTT();
+    runExpress();
+}, err => {
+    console.log('Mongodb Connection Error: ', err);
+});
+
+
 async function runMQTT() {
      mqttClient = await mqtt.connectAsync(config.mqtt.uri, {
-        clientId: 'arena_persist_' + config.mqtt.topic_realm,
+        clientId: 'arena_persist' + config.mqtt.topic_realm + '_' + Math.floor(Math.random() * 100),
         clean: false, // Receive QoS 1+ messages (object delete) always
         qos: 1,
         will: {
@@ -70,6 +73,7 @@ async function runMQTT() {
         }).then(() => {
             mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
             expirations = new Map();
+            clearInterval(expireTimer);
             expireTimer = setInterval(publishExpires, 1000);
         });
         mqttClient.on('message', async (topic, message) => {
@@ -112,44 +116,50 @@ async function runMQTT() {
                         if (expireAt) {
                             expirations.set(arenaObj.object_id, arenaObj);
                         }
+                        persists.add(arenaObj.object_id);
                     }
                     break;
                 case 'update':
-                    if (msgJSON.type === 'overwrite') {
-                        ArenaObject.findOneAndReplace(
-                            {object_id: insertObj.object_id},
-                            insertObj,
-                            {},
-                            (err) => {
-                                if (err) {
-                                    console.log('Does not exist:', arenaObj.object_id);
+                    if (persists.has(arenaObj.object_id)) {
+                        if (msgJSON.type === 'overwrite') {
+                            ArenaObject.findOneAndReplace(
+                                {object_id: insertObj.object_id},
+                                insertObj,
+                                {},
+                                (err) => {
+                                    if (err) {
+                                        console.log('Does not exist:', arenaObj.object_id);
+                                    }
                                 }
-                            }
-                        );
-                    } else {
-                        ArenaObject.findOneAndUpdate(
-                            {object_id: arenaObj.object_id},
-                            { $set: flatten({attributes: insertObj.attributes})},
-                            {},
-                            (err) => {
-                                if (err) {
-                                    console.log('Does not exist:', arenaObj.object_id);
+                            );
+                        } else {
+                            ArenaObject.findOneAndUpdate(
+                                {object_id: arenaObj.object_id},
+                                {$set: flatten({attributes: insertObj.attributes})},
+                                {},
+                                (err) => {
+                                    if (err) {
+                                        console.log('Does not exist:', arenaObj.object_id);
+                                    }
                                 }
-                            }
-                        );
-                    }
-                    if (expireAt) {
-                       expirations.set(arenaObj.object_id, arenaObj);
+                            );
+                        }
+                        if (expireAt) {
+                            expirations.set(arenaObj.object_id, arenaObj);
+                        }
                     }
                     break;
                 case 'delete':
-                    ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err) => {
-                        if (err) {
-                            console.log('Does not exist or already deleted:', arenaObj.object_id);
+                    if (persists.has(arenaObj.object_id)) {
+                        ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err) => {
+                            if (err) {
+                                console.log('Does not exist or already deleted:', arenaObj.object_id);
+                            }
+                        });
+                        if (expirations.has(arenaObj.object_id)) {
+                            expirations.delete(arenaObj.object_id);
                         }
-                    });
-                    if (expirations.has(arenaObj.object_id)) {
-                        expirations.delete(arenaObj.object_id);
+                        persists.delete(arenaObj.object_id);
                     }
                     break;
                 default:
@@ -172,6 +182,7 @@ const publishExpires = () => {
             };
             mqttClient.publish(topic, JSON.stringify(msg));
             expirations.delete(key);
+            persists.delete(key);
         }
     });
 };
@@ -181,12 +192,11 @@ let isPlainObj = (o) => Boolean(
     o && o.constructor && o.constructor.prototype && o.constructor.prototype.hasOwnProperty('isPrototypeOf')
 );
 
-let flatten = (obj, keys=[]) => {
+let flatten = (obj, keys = []) => {
     return Object.keys(obj).reduce((acc, key) => {
-        return Object.assign(acc, isPlainObj(obj[key])
-            ? flatten(obj[key], keys.concat(key))
-            : {[keys.concat(key).join('.')]: obj[key]}
-        );
+        return Object.assign(acc, isPlainObj(obj[key]) ? flatten(obj[key], keys.concat(key)) : {
+            [keys.concat(key).join('.')]: obj[key]
+        });
     }, {});
 };
 
