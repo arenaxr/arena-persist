@@ -8,7 +8,7 @@ const express = require('express');
 
 const arenaSchema = new mongoose.Schema({
     object_id: {type: String, index: true, unique: true},
-    attributes: Map,
+    attributes: Object,
     expireAt: { type: Date, expires: 0 },
     realm: {type: String, index: true},
     sceneId: {type: String, index: true},
