@@ -203,7 +203,7 @@ let flatten = (obj, keys = []) => {
 
 const runExpress = () => {
     const app = express();
-    app.get('/:sceneId', (req, res) => {
+    app.get('/persist/:sceneId', (req, res) => {
         ArenaObject.find({sceneId: req.params.sceneId}, {_id: 0, realm: 0, sceneId: 0, __v: 0}).then(msgs => {
             res.json(msgs);
         });
