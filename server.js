@@ -11,7 +11,7 @@ const {setIntervalAsync} = require('set-interval-async/dynamic');
 const arenaSchema = new mongoose.Schema({
     object_id: {type: String, required: true, index: true, unique: true},
     attributes: {
-        parent: { type: String, index: true }
+        parent: {type: String, index: true}
     },
     expireAt: {type: Date, expires: 0},
     realm: {type: String, required: true, index: true},
@@ -234,7 +234,7 @@ const loadTemplate = async (instanceId, templateId, realm, targetSceneId, opts) 
     await asyncForEach(sceneObjs, async (obj) => {
         obj.attributes.parent = prefix;
         await createArenaObj(prefix + '_' + obj.object_id, realm, targetSceneId, obj.attributes,
-                             options.persist, options.ttl);
+            options.persist, options.ttl);
     });
 };
 
