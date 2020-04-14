@@ -5,16 +5,18 @@ const config = require('./config.json');
 const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
 const express = require('express');
-const { setIntervalAsync } = require('set-interval-async/dynamic');
+const {setIntervalAsync} = require('set-interval-async/dynamic');
 
 
 const arenaSchema = new mongoose.Schema({
-    object_id: {type: String, index: true, unique: true},
-    attributes: Object,
-    expireAt: { type: Date, expires: 0 },
-    realm: {type: String, index: true},
-    sceneId: {type: String, index: true},
-},{
+    object_id: {type: String, required: true, index: true, unique: true},
+    attributes: {
+        parent: { type: String, index: true }
+    },
+    expireAt: {type: Date, expires: 0},
+    realm: {type: String, required: true, index: true},
+    sceneId: {type: String, required: true, index: true},
+}, {
     timestamps: true
 });
 
@@ -41,7 +43,7 @@ mongoose.connect(config.mongodb.uri, {
 
 
 async function runMQTT() {
-     mqttClient = await mqtt.connectAsync(config.mqtt.uri, {
+    mqttClient = await mqtt.connectAsync(config.mqtt.uri, {
         clientId: 'arena_persist' + config.mqtt.topic_realm + '_' + Math.floor(Math.random() * 100),
         clean: false, // Receive QoS 1+ messages (object delete) always
         qos: 1,
@@ -103,7 +105,7 @@ async function runMQTT() {
                     realm: topicSplit[0],
                     sceneId: topicSplit[2]
                 });
-            } catch(e) {
+            } catch (e) {
                 return;
             }
             let insertObj = arenaObj.toObject();
@@ -122,56 +124,119 @@ async function runMQTT() {
                     }
                     break;
                 case 'update':
-                    if (persists.has(arenaObj.object_id)) {
-                        if (msgJSON.type === 'overwrite') {
-                            ArenaObject.findOneAndReplace(
-                                {object_id: insertObj.object_id},
-                                insertObj,
-                                {},
-                                (err) => {
-                                    if (err) {
-                                        console.log('Does not exist:', arenaObj.object_id);
+                    if (msgJSON.persist && msgJSON.persist !== false) {
+                        if (persists.has(arenaObj.object_id)) {
+                            if (msgJSON.type === 'overwrite') {
+                                await ArenaObject.findOneAndReplace(
+                                    {object_id: insertObj.object_id},
+                                    insertObj,
+                                    {},
+                                    (err) => {
+                                        if (err) {
+                                            console.log('Does not exist:', arenaObj.object_id);
+                                        }
                                     }
-                                }
-                            );
-                        } else {
-                            ArenaObject.findOneAndUpdate(
-                                {object_id: arenaObj.object_id},
-                                {$set: flatten({attributes: insertObj.attributes})},
-                                {},
-                                (err) => {
-                                    if (err) {
-                                        console.log('Does not exist:', arenaObj.object_id);
+                                );
+                            } else {
+                                await ArenaObject.findOneAndUpdate(
+                                    {object_id: arenaObj.object_id},
+                                    {$set: flatten({attributes: insertObj.attributes})},
+                                    {},
+                                    (err) => {
+                                        if (err) {
+                                            console.log('Does not exist:', arenaObj.object_id);
+                                        }
                                     }
-                                }
-                            );
-                        }
-                        if (expireAt) {
-                            expirations.set(arenaObj.object_id, arenaObj);
+                                );
+                            }
+                            if (expireAt) {
+                                expirations.set(arenaObj.object_id, arenaObj);
+                            }
                         }
                     }
                     break;
                 case 'delete':
                     if (persists.has(arenaObj.object_id)) {
-                        ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err) => {
+                        await ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err) => {
                             if (err) {
                                 console.log('Does not exist or already deleted:', arenaObj.object_id);
                             }
                         });
+                        await ArenaObject.deleteMany({'attributes.parent': arenaObj.object_id});
                         if (expirations.has(arenaObj.object_id)) {
                             expirations.delete(arenaObj.object_id);
                         }
                         persists.delete(arenaObj.object_id);
                     }
                     break;
+                case 'loadTemplate':
+                    let a = arenaObj.attributes;
+                    let opts = {
+                        ttl: a.ttl,
+                        persist: a.persist,
+                        pose: {
+                            position: a.position,
+                            rotation: a.rotation
+                        }
+                    };
+                    await loadTemplate(a.instanceId, a.templateId, arenaObj.realm, arenaObj.sceneId, opts);
+                    break;
                 default:
-                    //pass
+                //pass
             }
         });
     } catch (e) {
         console.log(e.stack);
     }
 }
+
+
+const createArenaObj = async (object_id, realm, sceneId, attributes, persist, ttl) => {
+    let topic = realm + '/s/' + sceneId;
+    let expireAt;
+    let msg = {
+        object_id: object_id,
+        action: 'create',
+        data: attributes
+    };
+    if (persist || ttl) {
+        msg.persist = true;
+    }
+    if (ttl) {
+        msg.ttl = ttl;
+        expireAt = new Date(new Date().getTime() + (ttl * 1000));
+    }
+    let arenaObj = new ArenaObject({
+        object_id: object_id,
+        attributes: attributes,
+        expireAt: expireAt,
+        realm: realm,
+        sceneId: sceneId
+    });
+    await arenaObj.save();
+    await mqttClient.publish(topic, JSON.stringify(msg));
+};
+
+
+const loadTemplate = async (instanceId, templateId, realm, targetSceneId, opts) => {
+    let sceneObjs = await ArenaObject.find({sceneId: '@' + templateId});
+    let default_opts = {
+        ttl: undefined,
+        persist: false,
+        pose: {
+            position: {x: 0, y: 0, z: 0},
+            rotation: {x: 0, y: 0, z: 0, w: 0}
+        }
+    };
+    let options = Object.assign(default_opts, opts);
+    let prefix = '[' + instanceId + ':' + templateId + ']';
+    await createArenaObj(prefix, realm, targetSceneId, options.pose, options.persist, options.ttl);
+    await asyncForEach(sceneObjs, async (obj) => {
+        obj.attributes.parent = prefix;
+        await createArenaObj(prefix + '_' + obj.object_id, realm, targetSceneId, obj.attributes,
+                             options.persist, options.ttl);
+    });
+};
 
 
 const publishExpires = async () => {
@@ -186,6 +251,7 @@ const publishExpires = async () => {
             await mqttClient.publish(topic, JSON.stringify(msg));
             expirations.delete(key);
             persists.delete(key);
+            await ArenaObject.deleteMany({'attributes.parent': obj.object_id});
         }
     });
 };
