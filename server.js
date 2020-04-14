@@ -5,6 +5,8 @@ const config = require('./config.json');
 const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
 const express = require('express');
+const { setIntervalAsync } = require('set-interval-async/dynamic');
+
 
 const arenaSchema = new mongoose.Schema({
     object_id: {type: String, index: true, unique: true},
@@ -74,7 +76,7 @@ async function runMQTT() {
             mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
             expirations = new Map();
             clearInterval(expireTimer);
-            expireTimer = setInterval(publishExpires, 1000);
+            expireTimer = setIntervalAsync(publishExpires, 1000);
         });
         mqttClient.on('message', async (topic, message) => {
             let topicSplit = topic.split('/');
@@ -171,22 +173,29 @@ async function runMQTT() {
     }
 }
 
-const publishExpires = () => {
+
+const publishExpires = async () => {
     let now = new Date();
-    expirations.forEach((obj, key) => {
+    await asyncForEach(expirations, async (obj, key) => {
         if (obj.expireAt < now) {
             let topic = obj.realm + '/s/' + obj.sceneId;
             let msg = {
                 object_id: obj.object_id,
                 action: 'delete'
             };
-            mqttClient.publish(topic, JSON.stringify(msg));
+            await mqttClient.publish(topic, JSON.stringify(msg));
             expirations.delete(key);
             persists.delete(key);
         }
     });
 };
 
+
+async function asyncForEach(array, callback) {
+    for (let index = 0; index < array.length; index++) {
+        await callback(array[index], index, array);
+    }
+}
 
 let isPlainObj = (o) => Boolean(
     o && o.constructor && o.constructor.prototype && o.constructor.prototype.hasOwnProperty('isPrototypeOf')
