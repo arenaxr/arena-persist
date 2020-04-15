@@ -229,11 +229,15 @@ const loadTemplate = async (instanceId, templateId, realm, targetSceneId, opts) 
         }
     };
     let options = Object.assign(default_opts, opts);
-    let prefix = '[' + instanceId + ':' + templateId + ']';
+    let prefix = instanceId + '::' + templateId;
     await createArenaObj(prefix, realm, targetSceneId, options.pose, options.persist, options.ttl);
     await asyncForEach(sceneObjs, async (obj) => {
-        obj.attributes.parent = prefix;
-        await createArenaObj(prefix + '_' + obj.object_id, realm, targetSceneId, obj.attributes,
+        if (obj.attributes.parent) {
+            obj.attributes.parent = prefix + '::' + obj.attributes.parent;
+        } else {
+            obj.attributes.parent = prefix;
+        }
+        await createArenaObj(prefix + '::' + obj.object_id, realm, targetSceneId, obj.attributes,
             options.persist, options.ttl);
     });
 };
