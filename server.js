@@ -171,6 +171,10 @@ async function runMQTT() {
                         if (expirations.has(arenaObj.object_id)) {
                             expirations.delete(arenaObj.object_id);
                         }
+                        if (arenaObj.object_id.split('::').length - 1 === 1) {  // Template container ID, 1 pair of '::'
+                            let r = RegExp('^' + arenaObj.object_id + '::');
+                            await ArenaObject.deleteMany({'attributes.parent': r});
+                        }
                         persists.delete(arenaObj.object_id);
                     }
                     break;
