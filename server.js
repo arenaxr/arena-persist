@@ -10,17 +10,16 @@ const {setIntervalAsync} = require('set-interval-async/dynamic');
 
 const arenaSchema = new mongoose.Schema({
     object_id: {type: String, required: true, index: true, unique: true},
-    attributes: {
-        parent: {type: String, index: true}
-    },
+    attributes: Object,
     expireAt: {type: Date, expires: 0},
     realm: {type: String, required: true, index: true},
     sceneId: {type: String, required: true, index: true},
 }, {
-    timestamps: true
+    timestamps: true,
 });
 
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
+mongoose.connection.collections.arenaobjects.createIndex({ 'attributes.parent': 1 }, { sparse: true });
 
 let mqttClient;
 let persists = new Set();
@@ -92,19 +91,25 @@ async function runMQTT() {
             let arenaObj;
             let now = new Date();
             let expireAt;
+            let isTemplateMsg = false;
             try {
                 msgJSON = JSON.parse(message.toString());
-                if (msgJSON.ttl) {
-                    expireAt = new Date(now.getTime() + (msgJSON.ttl * 1000));
-                    msgJSON.persist = true;
-                }
                 arenaObj = new ArenaObject({
                     object_id: msgJSON.object_id,
                     attributes: msgJSON.data,
-                    expireAt: expireAt,
+                    expireAt: undefined,
                     realm: topicSplit[0],
                     sceneId: topicSplit[2]
                 });
+                if (arenaObj.sceneId[0] === '@') {
+                    isTemplateMsg = true;
+                }
+                if (msgJSON.ttl) {
+                    if (!isTemplateMsg) {  // Don't expire template scene objects on save
+                        arenaObj.expireAt = new Date(now.getTime() + (msgJSON.ttl * 1000));
+                    }
+                    msgJSON.persist = true;
+                }
             } catch (e) {
                 return;
             }
@@ -117,7 +122,7 @@ async function runMQTT() {
                             upsert: true,
                             runValidators: true
                         });
-                        if (expireAt) {
+                        if (arenaObj.expireAt) {
                             expirations.set(arenaObj.object_id, arenaObj);
                         }
                         persists.add(arenaObj.object_id);
@@ -149,7 +154,7 @@ async function runMQTT() {
                                     }
                                 );
                             }
-                            if (expireAt) {
+                            if (arenaObj.expireAt) {
                                 expirations.set(arenaObj.object_id, arenaObj);
                             }
                         }
@@ -179,6 +184,16 @@ async function runMQTT() {
                             rotation: a.rotation
                         }
                     };
+                    if (a.templateId) { // make sure template isn't empty exists
+                        if (await ArenaObject.countDocuments({sceneId: '@' + a.templateId}) === 0) {
+                            return;
+                        }
+                    }
+                    if (a.instanceId) {
+                        if (await ArenaObject.countDocuments({ sceneId: arenaObj.sceneId, object_id: a.templateId + '::' + a.instanceId}) > 0) {
+                            return;
+                        }
+                    }
                     await loadTemplate(a.instanceId, a.templateId, arenaObj.realm, arenaObj.sceneId, opts);
                     break;
                 default:
@@ -212,8 +227,10 @@ const createArenaObj = async (object_id, realm, sceneId, attributes, persist, tt
         expireAt: expireAt,
         realm: realm,
         sceneId: sceneId
+    }).toObject;
+    await ArenaObject.findOneAndUpdate({object_id: object_id}, arenaObj, {
+        upsert: true,
     });
-    await arenaObj.save();
     await mqttClient.publish(topic, JSON.stringify(msg));
 };
 
@@ -223,13 +240,14 @@ const loadTemplate = async (instanceId, templateId, realm, targetSceneId, opts) 
     let default_opts = {
         ttl: undefined,
         persist: false,
-        pose: {
+        attributes: {
             position: {x: 0, y: 0, z: 0},
-            rotation: {x: 0, y: 0, z: 0, w: 0}
-        }
+            rotation: {x: 0, y: 0, z: 0, w: 0},
+            object_type: 'templateContainer'
+        },
     };
     let options = Object.assign(default_opts, opts);
-    let prefix = instanceId + '::' + templateId;
+    let prefix = templateId + '::' + instanceId;
     await createArenaObj(prefix, realm, targetSceneId, options.pose, options.persist, options.ttl);
     await asyncForEach(sceneObjs, async (obj) => {
         if (obj.attributes.parent) {
@@ -238,7 +256,7 @@ const loadTemplate = async (instanceId, templateId, realm, targetSceneId, opts) 
             obj.attributes.parent = prefix;
         }
         await createArenaObj(prefix + '::' + obj.object_id, realm, targetSceneId, obj.attributes,
-            options.persist, options.ttl);
+            options.persist, obj.attributes.ttl);
     });
 };
 
