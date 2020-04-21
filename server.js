@@ -19,7 +19,7 @@ const arenaSchema = new mongoose.Schema({
 });
 
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
-mongoose.connection.collections.arenaobjects.createIndex({ 'attributes.parent': 1 }, { sparse: true });
+mongoose.connection.collections.arenaobjects.createIndex({'attributes.parent': 1}, {sparse: true});
 
 let mqttClient;
 let persists = new Set();
@@ -90,7 +90,6 @@ async function runMQTT() {
             let msgJSON;
             let arenaObj;
             let now = new Date();
-            let expireAt;
             let isTemplateMsg = false;
             try {
                 msgJSON = JSON.parse(message.toString());
@@ -194,7 +193,10 @@ async function runMQTT() {
                         }
                     }
                     if (a.instanceId) {
-                        if (await ArenaObject.countDocuments({ sceneId: arenaObj.sceneId, object_id: a.templateId + '::' + a.instanceId}) > 0) {
+                        if (await ArenaObject.countDocuments({
+                            sceneId: arenaObj.sceneId,
+                            object_id: a.templateId + '::' + a.instanceId
+                        }) > 0) {
                             return;
                         }
                     }
