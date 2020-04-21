@@ -318,9 +318,13 @@ let flatten = (obj, keys = []) => {
 const runExpress = () => {
     const app = express();
     app.get('/persist/:sceneId', (req, res) => {
-        ArenaObject.find({sceneId: req.params.sceneId}, {_id: 0, realm: 0, sceneId: 0, __v: 0}).then(msgs => {
-            res.json(msgs);
-        });
+        let now = new Date();
+        ArenaObject.find({sceneId: req.params.sceneId, expireAt: {$not: {$lt: now}}},
+            {_id: 0, realm: 0, sceneId: 0, __v: 0}
+        )
+            .then(msgs => {
+                res.json(msgs);
+            });
     });
     app.listen(8884);
 };
