@@ -6,6 +6,7 @@ const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
 const express = require('express');
 const {setIntervalAsync} = require('set-interval-async/dynamic');
+const {clearIntervalAsync} = require('set-interval-async');
 
 
 const arenaSchema = new mongoose.Schema({
@@ -53,8 +54,10 @@ async function runMQTT() {
     });
     const SCENE_TOPICS = config.mqtt.topic_realm + '/s/#';
     console.log('Connected to MQTT');
-    mqttClient.on('offline', () => {
-        clearInterval(expireTimer);
+    mqttClient.on('offline', async () => {
+        if (expireTimer) {
+            await clearIntervalAsync(expireTimer);
+        }
         console.log('offline, timer off');
     });
     mqttClient.on('reconnect', () => {
@@ -73,11 +76,13 @@ async function runMQTT() {
     try {
         await mqttClient.subscribe(SCENE_TOPICS, {
             qos: 1
-        }).then(() => {
-            mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
+        }).then(async () => {
             expirations = new Map();
-            clearInterval(expireTimer);
+            if (expireTimer) {
+                await clearIntervalAsync(expireTimer);
+            }
             expireTimer = setIntervalAsync(publishExpires, 1000);
+            await mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
         });
         mqttClient.on('message', async (topic, message) => {
             let topicSplit = topic.split('/');
@@ -269,7 +274,7 @@ const loadTemplate = async (instanceId, templateId, realm, targetSceneId, opts) 
 
 const publishExpires = async () => {
     let now = new Date();
-    await asyncForEach(expirations, async (obj, key) => {
+    await asyncMapForEach(expirations, async (obj, key) => {
         if (obj.expireAt < now) {
             let topic = obj.realm + '/s/' + obj.sceneId;
             let msg = {
@@ -288,6 +293,12 @@ const publishExpires = async () => {
 async function asyncForEach(array, callback) {
     for (let index = 0; index < array.length; index++) {
         await callback(array[index], index, array);
+    }
+}
+
+async function asyncMapForEach(m, callback) {
+    for (let e of m.entries()) {
+        await callback(e[1], e[0]);
     }
 }
 
