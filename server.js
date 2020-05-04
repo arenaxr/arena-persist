@@ -326,5 +326,16 @@ const runExpress = () => {
                 res.json(msgs);
             });
     });
+    app.get('/persist/:sceneId/:objectId', (req, res) => {
+        let now = new Date();
+        ArenaObject.find({
+                sceneId: req.params.sceneId,
+                object_id: req.params.objectId,
+                expireAt: {$not: {$lt: now}}
+            }, {_id: 0, realm: 0, sceneId: 0, __v: 0}
+        ).then(msgs => {
+            res.json(msgs);
+        });
+    });
     app.listen(8884);
 };
