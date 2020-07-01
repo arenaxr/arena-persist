@@ -60,13 +60,20 @@ async function runMQTT() {
         }
         console.log('offline, timer off');
     });
-    mqttClient.on('reconnect', () => {
+    mqttClient.on('reconnect', async () => {
         console.log('reconnect');
+        if (expireTimer) {
+            await clearIntervalAsync(expireTimer);
+        }
+        expireTimer = setIntervalAsync(publishExpires, 1000);
     });
     mqttClient.on('connect', () => {
         console.log('connect');
     });
-    mqttClient.on('disconnect', () => {
+    mqttClient.on('disconnect', async () => {
+        if (expireTimer) {
+            await clearIntervalAsync(expireTimer);
+        }
         console.log('disconnect');
     });
     mqttClient.on('error', (err) => {
