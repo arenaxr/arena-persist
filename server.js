@@ -11,6 +11,7 @@ const {clearIntervalAsync} = require('set-interval-async');
 
 const arenaSchema = new mongoose.Schema({
     object_id: {type: String, required: true, index: true, unique: true},
+    type: {type: String, required: true, index: true},
     attributes: Object,
     expireAt: {type: Date, expires: 0},
     realm: {type: String, required: true, index: true},
@@ -230,6 +231,7 @@ const createArenaObj = async (object_id, realm, sceneId, attributes, persist, tt
     let msg = {
         object_id: object_id,
         action: 'create',
+        type: 'object',
         data: attributes
     };
     if (persist || ttl) {
@@ -241,6 +243,7 @@ const createArenaObj = async (object_id, realm, sceneId, attributes, persist, tt
     }
     let arenaObj = new ArenaObject({
         object_id: object_id,
+        type: 'object',
         attributes: attributes,
         expireAt: expireAt,
         realm: realm,
@@ -326,12 +329,13 @@ const runExpress = () => {
     const app = express();
     app.get('/persist/:sceneId', (req, res) => {
         let now = new Date();
-        ArenaObject.find({sceneId: req.params.sceneId, expireAt: {$not: {$lt: now}}},
-            {_id: 0, realm: 0, sceneId: 0, __v: 0}
-        )
-            .then(msgs => {
-                res.json(msgs);
-            });
+        let query = {sceneId: req.params.sceneId, expireAt: {$not: {$lt: now}}};
+        if (req.params.type) {
+            query.type = req.params.type;
+        }
+        ArenaObject.find(query, {_id: 0, realm: 0, sceneId: 0, __v: 0}).then(records => {
+            res.json(records);
+        });
     });
     app.get('/persist/:sceneId/:objectId', (req, res) => {
         let now = new Date();
