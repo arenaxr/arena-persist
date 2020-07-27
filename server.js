@@ -330,8 +330,8 @@ const runExpress = () => {
     app.get('/persist/:sceneId', (req, res) => {
         let now = new Date();
         let query = {sceneId: req.params.sceneId, expireAt: {$not: {$lt: now}}};
-        if (req.params.type) {
-            query.type = req.params.type;
+        if (req.query.type) {
+            query.type = req.query.type;
         }
         ArenaObject.find(query, {_id: 0, realm: 0, sceneId: 0, __v: 0}).then(records => {
             res.json(records);
