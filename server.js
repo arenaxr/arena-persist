@@ -327,6 +327,12 @@ let flatten = (obj, keys = []) => {
 
 const runExpress = () => {
     const app = express();
+    app.get('/persist/!allscenes', (req, res) => {
+        ArenaObject.distinct('sceneId', (err, sceneIds) => {
+            sceneIds.sort();
+            res.json(sceneIds);
+        });
+    });
     app.get('/persist/:sceneId', (req, res) => {
         let now = new Date();
         let query = {sceneId: req.params.sceneId, expireAt: {$not: {$lt: now}}};
