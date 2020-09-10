@@ -9,10 +9,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "async-mqtt": "^2.5.0",
+    "async-mqtt": "^2.6.1",
     "express": "^4.17.1",
-    "mongoose": "^5.9.9",
-    "set-interval-async": "^1.0.32"
+    "mongoose": "^5.10.4",
+    "set-interval-async": "^1.0.33"
   },
   "devDependencies": {}
 }
