@@ -10,7 +10,7 @@ const {clearIntervalAsync} = require('set-interval-async');
 
 
 const arenaSchema = new mongoose.Schema({
-    object_id: {type: String, required: true, index: true, unique: true},
+    object_id: {type: String, required: true, index: true},
     type: {type: String, required: true, index: true},
     attributes: Object,
     expireAt: {type: Date, expires: 0},
@@ -90,7 +90,8 @@ async function runMQTT() {
                 await clearIntervalAsync(expireTimer);
             }
             expireTimer = setIntervalAsync(publishExpires, 1000);
-            await mqttClient.publish(config.mqtt.statusTopic, 'Persistence service connected: ' + config.mqtt.topic_realm);
+            await mqttClient.publish(config.mqtt.statusTopic,
+                'Persistence service connected: ' + config.mqtt.topic_realm);
         });
         mqttClient.on('message', async (topic, message) => {
             let topicSplit = topic.split('/');
