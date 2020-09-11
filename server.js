@@ -35,7 +35,11 @@ mongoose.connect(config.mongodb.uri, {
     useUnifiedTopology: true
 }).then(async () => {
     console.log('Connected to Mongodb');
-    persists = new Set((await ArenaObject.find({}, {'object_id': 1, '_id': 0})).map(o => o.object_id));
+    persists = new Set((await ArenaObject.find({}, {
+        'object_id': 1,
+        sceneId: 1,
+        '_id': 0
+    })).map(o => `${o.sceneId}|${o.object_id}`));
     await runMQTT();
     runExpress();
 }, err => {
@@ -131,22 +135,25 @@ async function runMQTT() {
             switch (msgJSON.action) {
                 case 'create':
                     if (msgJSON.persist === true) {
-                        await ArenaObject.findOneAndUpdate({object_id: arenaObj.object_id}, insertObj, {
+                        await ArenaObject.findOneAndUpdate({
+                            object_id: arenaObj.object_id,
+                            sceneId: arenaObj.sceneId
+                        }, insertObj, {
                             upsert: true,
                             runValidators: true
                         });
                         if (arenaObj.expireAt) {
-                            expirations.set(arenaObj.object_id, arenaObj);
+                            expirations.set(`${arenaObj.sceneId}|${arenaObj.object_id}`, arenaObj);
                         }
-                        persists.add(arenaObj.object_id);
+                        persists.add(`${arenaObj.sceneId}|${arenaObj.object_id}`);
                     }
                     break;
                 case 'update':
                     if (msgJSON.persist && msgJSON.persist !== false) {
-                        if (persists.has(arenaObj.object_id)) {
+                        if (persists.has(`${arenaObj.sceneId}|${arenaObj.object_id}`)) {
                             if (msgJSON.type === 'overwrite') {
                                 await ArenaObject.findOneAndReplace(
-                                    {object_id: insertObj.object_id},
+                                    {object_id: arenaObj.object_id, sceneId: arenaObj.sceneId},
                                     insertObj,
                                     {},
                                     (err) => {
@@ -157,7 +164,7 @@ async function runMQTT() {
                                 );
                             } else {
                                 await ArenaObject.findOneAndUpdate(
-                                    {object_id: arenaObj.object_id},
+                                    {object_id: arenaObj.object_id, sceneId: arenaObj.sceneId},
                                     {$set: flatten({attributes: insertObj.attributes})},
                                     {},
                                     (err) => {
@@ -168,27 +175,33 @@ async function runMQTT() {
                                 );
                             }
                             if (arenaObj.expireAt) {
-                                expirations.set(arenaObj.object_id, arenaObj);
+                                expirations.set(`${arenaObj.sceneId}|${arenaObj.object_id}`, arenaObj);
                             }
                         }
                     }
                     break;
                 case 'delete':
-                    if (persists.has(arenaObj.object_id)) {
-                        await ArenaObject.deleteOne({object_id: arenaObj.object_id}, (err) => {
+                    if (persists.has(`${arenaObj.sceneId}|${arenaObj.object_id}`)) {
+                        await ArenaObject.deleteOne({
+                            object_id: arenaObj.object_id,
+                            sceneId: arenaObj.sceneId
+                        }, (err) => {
                             if (err) {
                                 console.log('Does not exist or already deleted:', arenaObj.object_id);
                             }
                         });
-                        await ArenaObject.deleteMany({'attributes.parent': arenaObj.object_id});
-                        if (expirations.has(arenaObj.object_id)) {
-                            expirations.delete(arenaObj.object_id);
+                        await ArenaObject.deleteMany({
+                            'attributes.parent': arenaObj.object_id,
+                            sceneId: arenaObj.sceneId
+                        });
+                        if (expirations.has(`${arenaObj.sceneId}|${arenaObj.object_id}`)) {
+                            expirations.delete(`${arenaObj.sceneId}|${arenaObj.object_id}`);
                         }
                         if (arenaObj.object_id.split('::').length - 1 === 1) {  // Template container ID, 1 pair of '::'
                             let r = RegExp('^' + arenaObj.object_id + '::');
-                            await ArenaObject.deleteMany({'attributes.parent': r});
+                            await ArenaObject.deleteMany({'attributes.parent': r, sceneId: arenaObj.sceneId});
                         }
-                        persists.delete(arenaObj.object_id);
+                        persists.delete(`${arenaObj.sceneId}|${arenaObj.object_id}`);
                     }
                     break;
                 case 'loadTemplate':
@@ -250,7 +263,7 @@ const createArenaObj = async (object_id, realm, sceneId, attributes, persist, tt
         realm: realm,
         sceneId: sceneId
     }).toObject;
-    await ArenaObject.findOneAndUpdate({object_id: object_id}, arenaObj, {
+    await ArenaObject.findOneAndUpdate({object_id: object_id, sceneId: sceneId}, arenaObj, {
         upsert: true,
     });
     await mqttClient.publish(topic, JSON.stringify(msg));
@@ -295,7 +308,7 @@ const publishExpires = async () => {
             await mqttClient.publish(topic, JSON.stringify(msg));
             expirations.delete(key);
             persists.delete(key);
-            await ArenaObject.deleteMany({'attributes.parent': obj.object_id});
+            await ArenaObject.deleteMany({'attributes.parent': obj.object_id, sceneId: obj.sceneId});
         }
     });
 };
