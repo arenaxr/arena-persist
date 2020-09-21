@@ -341,6 +341,15 @@ let flatten = (obj, keys = []) => {
 
 const runExpress = () => {
     const app = express();
+    app.use((req, res, next) => {
+        if (!mqttClient.connected) {
+            res.status(503);
+            res.send('Disconnected from MQTT');
+            return next('Disconnected from MQTT');
+        }
+        next();
+    });
+
     app.get('/persist/!allscenes', (req, res) => {
         ArenaObject.distinct('sceneId', (err, sceneIds) => {
             sceneIds.sort();
