@@ -115,6 +115,7 @@ async function runMQTT() {
                     object_id: msgJSON.object_id,
                     attributes: msgJSON.data,
                     expireAt: undefined,
+                    type: msgJSON.type,
                     realm: topicSplit[0],
                     sceneId: topicSplit[2]
                 });
