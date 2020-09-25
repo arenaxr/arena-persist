@@ -152,7 +152,7 @@ async function runMQTT() {
                 case 'update':
                     if (msgJSON.persist && msgJSON.persist !== false) {
                         if (persists.has(`${arenaObj.sceneId}|${arenaObj.object_id}`)) {
-                            if (msgJSON.type === 'overwrite') {
+                            if (msgJSON.overwrite) {
                                 await ArenaObject.findOneAndReplace(
                                     {object_id: arenaObj.object_id, sceneId: arenaObj.sceneId},
                                     insertObj,
