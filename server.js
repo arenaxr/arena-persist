@@ -129,10 +129,10 @@ async function runMQTT() {
                     isTemplateMsg = true;
                 }
                 if (msgJSON.ttl) {
-                    if (!isTemplateMsg) {  // Don't expire template scene objects on save
+                    // Don't expire template scene objects on save
+                    if (!isTemplateMsg && msgJSON.persist && msgJSON.persist !== false) {
                         arenaObj.expireAt = new Date(now.getTime() + (msgJSON.ttl * 1000));
                     }
-                    msgJSON.persist = true;
                 }
             } catch (e) {
                 return;
