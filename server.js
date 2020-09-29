@@ -67,6 +67,12 @@ async function runMQTT() {
     });
     mqttClient.on('reconnect', async () => {
         console.log('reconnect');
+        // Resync
+        persists = new Set((await ArenaObject.find({}, {
+            'object_id': 1,
+            sceneId: 1,
+            '_id': 0
+        })).map(o => `${o.sceneId}|${o.object_id}`));
         if (expireTimer) {
             await clearIntervalAsync(expireTimer);
         }
