@@ -170,9 +170,10 @@ async function runMQTT() {
                                     }
                                 );
                             } else {
+                                let [ sets, unSets ] = filterNulls(flatten({attributes: insertObj.attributes}));
                                 await ArenaObject.findOneAndUpdate(
                                     {object_id: arenaObj.object_id, sceneId: arenaObj.sceneId},
-                                    {$set: flatten({attributes: insertObj.attributes})},
+                                    {$set: sets, $unset: unSets },
                                     {},
                                     (err) => {
                                         if (err) {
@@ -333,16 +334,29 @@ async function asyncMapForEach(m, callback) {
     }
 }
 
-let isPlainObj = (o) => Boolean(
+const isPlainObj = (o) => Boolean(
     o && o.constructor && o.constructor.prototype && o.constructor.prototype.hasOwnProperty('isPrototypeOf')
 );
 
-let flatten = (obj, keys = []) => {
+const flatten = (obj, keys = []) => {
     return Object.keys(obj).reduce((acc, key) => {
         return Object.assign(acc, isPlainObj(obj[key]) ? flatten(obj[key], keys.concat(key)) : {
             [keys.concat(key).join('.')]: obj[key]
         });
     }, {});
+};
+
+const filterNulls = (obj) => {
+    let sets = {};
+    let unSets = {};
+    for (const key in obj) {
+        if (obj[key] === null) {
+            unSets[key] = '';
+        } else {
+            sets[key] = obj[key];
+        }
+    }
+    return [sets, unSets];
 };
 
 
