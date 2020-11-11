@@ -4,9 +4,11 @@
 const config = require('./config.json');
 const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
+const cors = require('cors');
 const express = require('express');
 const {setIntervalAsync} = require('set-interval-async/dynamic');
 const {clearIntervalAsync} = require('set-interval-async');
+const { JWT, JWK } = require('jose');
 
 
 const arenaSchema = new mongoose.Schema({
@@ -362,6 +364,14 @@ const filterNulls = (obj) => {
 
 const runExpress = () => {
     const app = express();
+
+    // Set and remove headers
+    app.disable('x-powered-by');
+    let exposedHeaders = ['MQTT-TOKEN'];
+    app.use(cors((req, callback) => {
+        callback(null, {exposedHeaders});
+    }));
+
     app.use((req, res, next) => {
         if (!mqttClient.connected) {
             res.status(503);
