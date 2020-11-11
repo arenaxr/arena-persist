@@ -10,8 +10,11 @@
   "license": "ISC",
   "dependencies": {
     "async-mqtt": "^2.6.1",
+    "cors": "^2.8.5",
     "express": "^4.17.1",
+    "jose": "^2.0.3",
     "mongoose": "^5.10.6",
+    "mqtt-pattern": "^1.2.0",
     "set-interval-async": "^1.0.33"
   },
   "devDependencies": {}
