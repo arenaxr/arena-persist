@@ -27,4 +27,4 @@ jobs:
              git commit -m "Updated arena-persist submodule to latest commit"
              git push
              docker-compose stop arena-persist
-             docker-compose up --force-recreate --build -d arena-persist
+             docker-compose -f docker-compose.yaml -f docker-compose.prod.yaml up --force-recreate --build -d arena-persist
