@@ -9,7 +9,12 @@ const express = require('express');
 const {setIntervalAsync} = require('set-interval-async/dynamic');
 const {clearIntervalAsync} = require('set-interval-async');
 const { JWT, JWK } = require('jose');
+const MQTTPattern = require('mqtt-pattern');
 
+let jwk;
+if (process.env.SECRET_KEY) {
+    jwk = JWK.asKey({kty: 'oct', k: process.env.SECRET_KEY});
+}
 
 const arenaSchema = new mongoose.Schema({
     object_id: {type: String, required: true, index: true},
@@ -172,10 +177,10 @@ async function runMQTT() {
                                     }
                                 );
                             } else {
-                                let [ sets, unSets ] = filterNulls(flatten({attributes: insertObj.attributes}));
+                                let [sets, unSets] = filterNulls(flatten({attributes: insertObj.attributes}));
                                 await ArenaObject.findOneAndUpdate(
                                     {object_id: arenaObj.object_id, sceneId: arenaObj.sceneId},
-                                    {$set: sets, $unset: unSets },
+                                    {$set: sets, $unset: unSets},
                                     {},
                                     (err) => {
                                         if (err) {
@@ -381,7 +386,43 @@ const runExpress = () => {
         next();
     });
 
+    const tokenError = (res) => {
+        res.status(401);
+        res.send('Error validating mqtt permissions');
+    };
+
+    if (jwk) {
+        app.use(async (req, res, next) => {
+            const token = req.header('MQTT-TOKEN');
+            if (!token) {
+                return tokenError(res);
+            }
+            try {
+                req.jwtPayload = JWT.verify(token, jwk);
+                next();
+            } catch (err) {
+                return tokenError(res);
+            }
+        });
+        app.param('sceneId', (req, res, next, sceneId) => {
+            let valid = false;
+            let len = req.jwtPayload.subs.length;
+            for (let i = 0; i < len; i++) {
+                if (MQTTPattern.matches(req.jwtPayload.subs[i], `realm/s/${sceneId}`)) {
+                    valid = true;
+                    break;
+                }
+            }
+            if (!valid) {
+                return tokenError(res);
+            }
+            next();
+        });
+    }
     app.get('/persist/!allscenes', (req, res) => {
+        if (jwk && !req.jwtPayload.subs.includes('#')) {  // Must have sub-all rights
+            return tokenError(res);
+        }
         ArenaObject.distinct('sceneId', (err, sceneIds) => {
             sceneIds.sort();
             res.json(sceneIds);
@@ -410,3 +451,5 @@ const runExpress = () => {
     });
     app.listen(8884);
 };
+
+
