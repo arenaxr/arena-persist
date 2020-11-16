@@ -6,6 +6,5 @@
     },
     "mongodb": {
         "uri": "mongodb://localhost/arena_persist"
-    },
-    "secret": "E5E9FA1BA31ECD1AE84F75CAAA474F3A663F05F4"
+    }
 }
