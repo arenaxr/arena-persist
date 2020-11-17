@@ -2,6 +2,7 @@
 'use strict';
 
 const config = require('./config.json');
+const fs = require('fs');
 const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
 const cors = require('cors');
@@ -12,8 +13,13 @@ const { JWT, JWK } = require('jose');
 const MQTTPattern = require('mqtt-pattern');
 
 let jwk;
-if (process.env.SECRET_KEY) {
-    jwk = JWK.asKey({kty: 'oct', k: process.env.SECRET_KEY});
+if (config.jwt_public_key) {
+    try {
+        jwk = JWK.asKey(fs.readFileSync(config.jwt_public_key));
+    } catch (err) {
+        console.error(`Error loading public key: ${config.jwt_public_key}`);
+        process.exit();
+    }
 }
 
 const arenaSchema = new mongoose.Schema({
@@ -451,5 +457,3 @@ const runExpress = () => {
     });
     app.listen(8884);
 };
-
-
