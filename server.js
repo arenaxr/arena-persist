@@ -61,7 +61,7 @@ mongoose.connect(config.mongodb.uri, {
 
 
 async function runMQTT() {
-    mqttClient = await mqtt.connectAsync(config.mqtt.uri, {
+    let connectOpts = {
         clientId: 'arena_persist' + config.mqtt.topic_realm + '_' + Math.floor(Math.random() * 100),
         clean: false, // Receive QoS 1+ messages (object delete) always
         qos: 1,
@@ -69,7 +69,12 @@ async function runMQTT() {
             topic: config.mqtt.statusTopic,
             payload: 'Persistence service disconnected: ' + config.mqtt.topic_realm
         }
-    });
+    };
+    if (jwk) {
+        connectOpts.username = config.jwt_service_user;
+        connectOpts.password = config.jwt_service_token;
+    }
+    mqttClient = await mqtt.connectAsync(config.mqtt.uri, connectOpts);
     const SCENE_TOPICS = config.mqtt.topic_realm + '/s/#';
     console.log('Connected to MQTT');
     mqttClient.on('offline', async () => {

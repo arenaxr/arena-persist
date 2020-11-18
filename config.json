@@ -7,5 +7,7 @@
     "mongodb": {
         "uri": "mongodb://localhost/arena_persist"
     },
-    "jwt_public_key": ""
+    "jwt_public_key": "",
+    "jwt_service_user": "arena-persist",
+    "jwt_service_token": ""
 }
