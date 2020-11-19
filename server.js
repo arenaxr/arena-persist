@@ -13,11 +13,11 @@ const { JWT, JWK } = require('jose');
 const MQTTPattern = require('mqtt-pattern');
 
 let jwk;
-if (config.jwt_public_key) {
+if (config.jwt_public_keyfile) {
     try {
-        jwk = JWK.asKey(fs.readFileSync(config.jwt_public_key));
+        jwk = JWK.asKey(fs.readFileSync(config.jwt_public_keyfile));
     } catch (err) {
-        console.error(`Error loading public key: ${config.jwt_public_key}`);
+        console.error(`Error loading public key: ${config.jwt_public_keyfile}`);
         process.exit();
     }
 }
