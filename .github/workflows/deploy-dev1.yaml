@@ -28,5 +28,5 @@ jobs:
              git checkout master
              git pull
              cd ..
-             ./staging stop arena-persist
-             ./staging up --force-recreate --build -d arena-persist
+             ./staging.sh stop arena-persist
+             ./staging/sh up --force-recreate --build -d arena-persist
