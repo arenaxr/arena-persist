@@ -29,4 +29,4 @@ jobs:
              git pull
              cd ..
              ./staging.sh stop arena-persist
-             ./staging/sh up --force-recreate --build -d arena-persist
+             ./staging.sh up --force-recreate --build -d arena-persist
