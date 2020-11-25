@@ -12,7 +12,6 @@ const MQTTPattern = require('mqtt-pattern');
 
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const cors = require('cors');
 
 let jwk;
 if (config.jwt_public_keyfile) {
@@ -385,10 +384,6 @@ const runExpress = () => {
 
     // Set and remove headers
     app.disable('x-powered-by');
-    let exposedHeaders = ['MQTT-TOKEN'];
-    app.use(cors((req, callback) => {
-        callback(null, {exposedHeaders});
-    }));
 
     app.use((req, res, next) => {
         if (!mqttClient.connected) {
