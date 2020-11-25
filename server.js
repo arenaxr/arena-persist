@@ -5,12 +5,14 @@ const config = require('./config.json');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
-const cors = require('cors');
-const express = require('express');
 const {setIntervalAsync} = require('set-interval-async/dynamic');
 const {clearIntervalAsync} = require('set-interval-async');
 const { JWT, JWK } = require('jose');
 const MQTTPattern = require('mqtt-pattern');
+
+const express = require('express');
+const cookieParser = require('cookie-parser');
+const cors = require('cors');
 
 let jwk;
 if (config.jwt_public_keyfile) {
@@ -403,8 +405,9 @@ const runExpress = () => {
     };
 
     if (jwk) {
+        app.use(cookieParser());
         app.use(async (req, res, next) => {
-            const token = req.header('MQTT-TOKEN');
+            const token = req.cookies.mqtt_token;
             if (!token) {
                 return tokenError(res);
             }
