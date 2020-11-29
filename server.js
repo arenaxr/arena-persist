@@ -429,7 +429,7 @@ const runExpress = () => {
         });
     }
     app.get('/persist/!allscenes', (req, res) => {
-        if (jwk && !req.jwtPayload.subs.includes('#')) {  // Must have sub-all rights
+        if (jwk && !req.jwtPayload.subs.includes('realm/s/#')) {  // Must have sub-all rights
             return tokenError(res);
         }
         ArenaObject.distinct('sceneId', (err, sceneIds) => {
@@ -438,6 +438,7 @@ const runExpress = () => {
         });
     });
     app.get('/persist/:sceneId', (req, res) => {
+        // TODO (mwfarb): parse subs for match for realm/s/:sceneId
         let now = new Date();
         let query = {sceneId: req.params.sceneId, expireAt: {$not: {$lt: now}}};
         if (req.query.type) {
@@ -448,6 +449,7 @@ const runExpress = () => {
         });
     });
     app.get('/persist/:sceneId/:objectId', (req, res) => {
+        // TODO (mwfarb): parse subs for match for realm/s/:sceneId
         let now = new Date();
         ArenaObject.find({
                 sceneId: req.params.sceneId,
