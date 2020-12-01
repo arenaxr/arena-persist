@@ -23,7 +23,9 @@ jobs:
           script: |
             cd  $TARGET
              git checkout master
+             git reset --hard HEAD
              git pull
              cd ..
              ./staging.sh stop arena-persist
              ./staging.sh up --force-recreate --build -d arena-persist
+             ./staging.sh restart arena-web
