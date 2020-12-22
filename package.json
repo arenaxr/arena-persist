@@ -18,5 +18,8 @@
     "mqtt-pattern": "^1.2.0",
     "set-interval-async": "^1.0.33"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "eslint": "^7.15.0",
+    "eslint-config-google": "^0.14.0"
+  }
 }
