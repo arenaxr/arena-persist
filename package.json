@@ -14,7 +14,7 @@
     "cookie-parser": "^1.4.5",
     "express": "^4.17.1",
     "jose": "^2.0.3",
-    "mongoose": "^5.10.15",
+    "mongoose": "^5.11.8",
     "mqtt-pattern": "^1.2.0",
     "set-interval-async": "^1.0.33"
   },
