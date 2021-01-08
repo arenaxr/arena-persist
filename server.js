@@ -29,6 +29,7 @@ const arenaSchema = new mongoose.Schema({
     attributes: Object,
     expireAt: {type: Date, expires: 0},
     realm: {type: String, required: true, index: true},
+    namespace: {type: String, required: true, index: true, default: 'public'},
     sceneId: {type: String, required: true, index: true},
 }, {
     timestamps: true,
@@ -51,15 +52,19 @@ mongoose.connect(config.mongodb.uri, {
     console.log('Connected to Mongodb');
     persists = new Set((await ArenaObject.find({}, {
         'object_id': 1,
+        'namespace': 1,
         'sceneId': 1,
         '_id': 0,
-    })).map((o) => `${o.sceneId}|${o.object_id}`));
+    })).map((o) => `${o.namespace}|${o.sceneId}|${o.object_id}`));
     await runMQTT();
     runExpress();
 }, (err) => {
     console.log('Mongodb Connection Error: ', err);
 });
 
+/**
+* Initializes MQTT connection and setts event handlers
+ */
 async function runMQTT() {
     const connectOpts = {
         clientId: 'arena_persist' + config.mqtt.topic_realm + '_' + Math.floor(Math.random() * 100),
@@ -75,7 +80,7 @@ async function runMQTT() {
         connectOpts.password = config.jwt_service_token;
     }
     mqttClient = await mqtt.connectAsync(config.mqtt.uri, connectOpts);
-    const SCENE_TOPICS = config.mqtt.topic_realm + '/s/#';
+    const SCENE_TOPIC_BASE = config.mqtt.topic_realm + '/s/#';
     console.log('Connected to MQTT');
     mqttClient.on('offline', async () => {
         if (expireTimer) {
@@ -88,9 +93,10 @@ async function runMQTT() {
         // Resync
         persists = new Set((await ArenaObject.find({}, {
             'object_id': 1,
+            'namespace': 1,
             'sceneId': 1,
             '_id': 0,
-        })).map((o) => `${o.sceneId}|${o.object_id}`));
+        })).map((o) => `${o.namespace}|${o.sceneId}|${o.object_id}`));
         if (expireTimer) {
             await clearIntervalAsync(expireTimer);
         }
@@ -110,7 +116,7 @@ async function runMQTT() {
         console.log(err);
     });
     try {
-        await mqttClient.subscribe(SCENE_TOPICS, {
+        await mqttClient.subscribe(SCENE_TOPIC_BASE, {
             qos: 1,
         }).then(async () => {
             expirations = new Map();
@@ -127,7 +133,8 @@ async function runMQTT() {
             Topic tokens by forward slash:
             - 0: realm
             - 1: type [s, n, r, topology, flows]
-            - 2: scene_id
+            - 2: namespace
+            - 3: sceneId
             */
             let msgJSON;
             let arenaObj;
@@ -141,7 +148,8 @@ async function runMQTT() {
                     expireAt: undefined,
                     type: msgJSON.type,
                     realm: topicSplit[0],
-                    sceneId: topicSplit[2],
+                    namespace: topicSplit[2],
+                    sceneId: topicSplit[3],
                 });
                 if (arenaObj.sceneId[0] === '@') {
                     isTemplateMsg = true;
@@ -162,24 +170,26 @@ async function runMQTT() {
                 if (msgJSON.persist === true) {
                     await ArenaObject.findOneAndUpdate({
                         object_id: arenaObj.object_id,
+                        namespace: arenaObj.namespace,
                         sceneId: arenaObj.sceneId,
                     }, insertObj, {
                         upsert: true,
                         runValidators: true,
                     });
                     if (arenaObj.expireAt) {
-                        expirations.set(`${arenaObj.sceneId}|${arenaObj.object_id}`, arenaObj);
+                        expirations.set(`${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`, arenaObj);
                     }
-                    persists.add( `${arenaObj.sceneId}|${arenaObj.object_id}`);
+                    persists.add( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
                 }
                 break;
             case 'update':
                 if (msgJSON.persist && msgJSON.persist !== false) {
-                    if (persists.has(`${arenaObj.sceneId}|${arenaObj.object_id}`)) {
+                    if (persists.has(`${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
                         if (msgJSON.overwrite) {
                             await ArenaObject.findOneAndReplace(
                                 {
                                     object_id: arenaObj.object_id,
+                                    namespace: arenaObj.namespace,
                                     sceneId: arenaObj.sceneId,
                                 },
                                 insertObj,
@@ -195,6 +205,7 @@ async function runMQTT() {
                             await ArenaObject.findOneAndUpdate(
                                 {
                                     object_id: arenaObj.object_id,
+                                    namespace: arenaObj.namespace,
                                     sceneId: arenaObj.sceneId,
                                 },
                                 {$set: sets, $unset: unSets},
@@ -207,15 +218,19 @@ async function runMQTT() {
                             );
                         }
                         if (arenaObj.expireAt) {
-                            expirations.set( `${arenaObj.sceneId}|${arenaObj.object_id}`, arenaObj);
+                            expirations.set(
+                                `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
+                                arenaObj,
+                            );
                         }
                     }
                 }
                 break;
             case 'delete':
-                if (persists.has( `${arenaObj.sceneId}|${arenaObj.object_id}`)) {
+                if (persists.has( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
                     await ArenaObject.deleteOne({
                         object_id: arenaObj.object_id,
+                        namespace: arenaObj.namespace,
                         sceneId: arenaObj.sceneId,
                     }, (err) => {
                         if (err) {
@@ -224,16 +239,21 @@ async function runMQTT() {
                     });
                     await ArenaObject.deleteMany({
                         'attributes.parent': arenaObj.object_id,
+                        'namespace': arenaObj.namespace,
                         'sceneId': arenaObj.sceneId,
                     });
-                    if (expirations.has( `${arenaObj.sceneId}|${arenaObj.object_id}`)) {
-                        expirations.delete( `${arenaObj.sceneId}|${arenaObj.object_id}`);
+                    if (expirations.has( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
+                        expirations.delete( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
                     }
                     if (arenaObj.object_id.split('::').length - 1 === 1) { // Template container ID, 1 pair of '::'
                         const r = RegExp('^' + arenaObj.object_id + '::');
-                        await ArenaObject.deleteMany({'attributes.parent': r, 'sceneId': arenaObj.sceneId});
+                        await ArenaObject.deleteMany({
+                            'attributes.parent': r,
+                            'namespace': arenaObj.namespace,
+                            'sceneId': arenaObj.sceneId,
+                        });
                     }
-                    persists.delete( `${arenaObj.sceneId}|${arenaObj.object_id}`);
+                    persists.delete( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
                 }
                 break;
             case 'loadTemplate':
@@ -247,19 +267,30 @@ async function runMQTT() {
                     },
                 };
                 if (a.templateId) { // make sure template isn't empty exists
-                    if (await ArenaObject.countDocuments( {sceneId: '@' + a.templateId}) === 0) {
+                    if (await ArenaObject.countDocuments( {
+                        namespace: arenaObj.namespace,
+                        sceneId: '@' + a.templateId,
+                    }) === 0) {
                         return;
                     }
                 }
                 if (a.instanceId) {
                     if (await ArenaObject.countDocuments({
+                        namespace: arenaObj.namespace,
                         sceneId: arenaObj.sceneId,
                         object_id: a.templateId + '::' + a.instanceId,
                     }) > 0) {
                         return;
                     }
                 }
-                await loadTemplate(a.instanceId, a.templateId, arenaObj.realm, arenaObj.sceneId, opts);
+                await loadTemplate(
+                    a.instanceId,
+                    a.templateId,
+                    arenaObj.realm,
+                    arenaObj.namespace,
+                    arenaObj.sceneId,
+                    opts,
+                );
                 break;
             default:
                 // pass
@@ -270,8 +301,19 @@ async function runMQTT() {
     }
 }
 
-const createArenaObj = async (object_id, realm, sceneId, attributes, persist, ttl) => {
-    const topic = realm + '/s/' + sceneId;
+/**
+ * Creates an arena object with given paramters
+ * @param {string} object_id - id of object
+ * @param {string} realm - MQTT topic realm
+ * @param {string} namespace - namespace of sceneId
+ * @param {string} sceneId - sceneId of object
+ * @param {Object} attributes - data payload of message
+ * @param {boolean} [persist] - Whether to persist this object
+ * @param {Number} [ttl] - ttl in seconds
+*/
+// eslint-disable-next-line camelcase
+const createArenaObj = async (object_id, realm, namespace, sceneId, attributes, persist, ttl) => {
+    const topic = `realm/s/${namespace}/${sceneId}`;
     let expireAt;
     const msg = {
         object_id: object_id,
@@ -292,17 +334,36 @@ const createArenaObj = async (object_id, realm, sceneId, attributes, persist, tt
         attributes: attributes,
         expireAt: expireAt,
         realm: realm,
+        namespace: namespace,
         sceneId: sceneId,
     }).toObject;
-    await ArenaObject.findOneAndUpdate({object_id: object_id, sceneId: sceneId}, arenaObj, {
+    await ArenaObject.findOneAndUpdate({
+        namespace: namespace,
+        object_id: object_id,
+        sceneId: sceneId,
+    }, arenaObj, {
         upsert: true,
     });
     await mqttClient.publish(topic, JSON.stringify(msg));
 };
 
-const loadTemplate = async (instanceId, templateId, realm, targetSceneId, opts) => {
-    const sceneObjs = await ArenaObject.find({sceneId: '@' + templateId});
-    const default_opts = {
+/**
+ * Loads a template-scene and instantiates all objects from it in into a
+ * target scene, first inside a templateContainer parent, then with each
+ * object_id prefixed with the template and instance strings.
+ * @param {string} instanceId - id of instance
+ * @param {string} templateId - id of template
+ * @param {string} realm - MQTT topic realm
+ * @param {string} targetNamespace - namespace of sceneId to insert new objs into
+ * @param {string} targetSceneId - sceneId of object to insert new objs into
+ * @param {Object} opts - various options to apply to Template container
+ * @param {Number} opts.ttl - Duration TTL (seconds) of Template container
+ * @param {boolean} opts.persist - Whether to persist *all* templated objects
+ * @param {attributes} opts.attributes - data payload Template container
+ */
+const loadTemplate = async (instanceId, templateId, realm, targetNamespace, targetSceneId, opts) => {
+    const sceneObjs = await ArenaObject.find({namespace: targetNamespace, sceneId: '@' + templateId});
+    const defaultOpts = {
         ttl: undefined,
         persist: false,
         attributes: {
@@ -311,17 +372,24 @@ const loadTemplate = async (instanceId, templateId, realm, targetSceneId, opts) 
             object_type: 'templateContainer',
         },
     };
-    const options = Object.assign(default_opts, opts);
+    const options = Object.assign(defaultOpts, opts);
     const prefix = templateId + '::' + instanceId;
-    await createArenaObj(prefix, realm, targetSceneId, options.pose, options.persist, options.ttl);
+    await createArenaObj(prefix, realm, targetNamespace, targetSceneId, options.pose, options.persist, options.ttl);
     await asyncForEach(sceneObjs, async (obj) => {
         if (obj.attributes.parent) {
             obj.attributes.parent = prefix + '::' + obj.attributes.parent;
         } else {
             obj.attributes.parent = prefix;
         }
-        await createArenaObj(prefix + '::' + obj.object_id, realm, targetSceneId, obj.attributes,
-            options.persist, obj.attributes.ttl);
+        await createArenaObj(
+            prefix + '::' + obj.object_id,
+            realm,
+            targetNamespace,
+            targetSceneId,
+            obj.attributes,
+            options.persist,
+            obj.attributes.ttl,
+        );
     });
 };
 
@@ -329,7 +397,7 @@ const publishExpires = async () => {
     const now = new Date();
     await asyncMapForEach(expirations, async (obj, key) => {
         if (obj.expireAt < now) {
-            const topic = obj.realm + '/s/' + obj.sceneId;
+            const topic = `${obj.realm}/s/${obj.namespace}/${obj.sceneId}`;
             const msg = {
                 object_id: obj.object_id,
                 action: 'delete',
@@ -337,17 +405,32 @@ const publishExpires = async () => {
             await mqttClient.publish(topic, JSON.stringify(msg));
             expirations.delete(key);
             persists.delete(key);
-            await ArenaObject.deleteMany( {'attributes.parent': obj.object_id, 'sceneId': obj.sceneId});
+            await ArenaObject.deleteMany( {
+                'attributes.parent': obj.object_id,
+                'namespace': obj.namespace,
+                'sceneId': obj.sceneId,
+            });
         }
     });
 };
 
+
+/**
+ * Performs forEach callback on an array in async manner.
+ * @param {Array} array - Array or array-like object over which to iterate.
+ * @param {function} callback - The function to call, wait await, for every element.
+ */
 async function asyncForEach(array, callback) {
     for (let index = 0; index < array.length; index++) {
         await callback(array[index], index, array);
     }
 }
 
+/**
+ * Performs map callback on an array in async manner.
+ * @param {Array} m - Array or array-like object over which to iterate.
+ * @param {function} callback - The function to call, wait await, for every element.
+ */
 async function asyncMapForEach(m, callback) {
     for (const e of m.entries()) {
         await callback(e[1], e[0]);
@@ -370,10 +453,12 @@ const filterNulls = (obj) => {
     const sets = {};
     const unSets = {};
     for (const key in obj) {
-        if (obj[key] === null) {
-            unSets[key] = '';
-        } else {
-            sets[key] = obj[key];
+        if (obj.hasOwnProperty(key)) {
+            if (obj[key] === null) {
+                unSets[key] = '';
+            } else {
+                sets[key] = obj[key];
+            }
         }
     }
     return [sets, unSets];
@@ -384,6 +469,10 @@ const runExpress = () => {
 
     // Set and remove headers
     app.disable('x-powered-by');
+
+    let checkJWT = (req, res, next) => {
+        next();
+    };
 
     app.use((req, res, next) => {
         if (!mqttClient.connected) {
@@ -413,11 +502,13 @@ const runExpress = () => {
                 return tokenError(res);
             }
         });
-        app.param('sceneId', (req, res, next, sceneId) => {
+        checkJWT = (req, res, next) => {
+            const sceneId = req.params.sceneId;
+            const namespace = req.params.namespace;
             let valid = false;
             const len = req.jwtPayload.subs.length;
             for (let i = 0; i < len; i++) {
-                if (MQTTPattern.matches(req.jwtPayload.subs[i], `realm/s/${sceneId}`)) {
+                if (MQTTPattern.matches(req.jwtPayload.subs[i], `realm/s/${namespace}/${sceneId}`)) {
                     valid = true;
                     break;
                 }
@@ -426,8 +517,9 @@ const runExpress = () => {
                 return tokenError(res);
             }
             next();
-        });
+        };
     }
+
     app.get('/persist/!allscenes', (req, res) => {
         if (jwk && !req.jwtPayload.subs.includes('realm/s/#')) { // Must have sub-all rights
             return tokenError(res);
@@ -437,26 +529,28 @@ const runExpress = () => {
             res.json(sceneIds);
         });
     });
-    app.get('/persist/:sceneId', (req, res) => {
+    app.get('/persist/:namespace/:sceneId', checkJWT, (req, res) => {
         const now = new Date();
-        const query = {sceneId: req.params.sceneId, expireAt: {$not: {$lt: now}}};
+        const query = {sceneId: req.params.sceneId, namespace: req.params.namespace, expireAt: {$not: {$lt: now}}};
         if (req.query.type) {
             query.type = req.query.type;
         }
-        ArenaObject.find(query, {_id: 0, realm: 0, sceneId: 0, __v: 0}). then((records) => {
+        ArenaObject.find(query, {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0}). then((records) => {
             res.json(records);
         });
     });
-    app.get('/persist/:sceneId/:objectId', (req, res) => {
+    app.get('/persist/:namespace/:sceneId/:objectId', checkJWT, (req, res) => {
         const now = new Date();
         ArenaObject.find({
+            namespace: req.params.namespace,
             sceneId: req.params.sceneId,
             object_id: req.params.objectId,
             expireAt: {$not: {$lt: now}},
-        }, {_id: 0, realm: 0, sceneId: 0, __v: 0},
+        }, {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0},
         ).then((msgs) => {
             res.json(msgs);
         });
     });
+
     app.listen(8884);
 };
