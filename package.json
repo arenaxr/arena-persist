@@ -14,12 +14,12 @@
     "cookie-parser": "^1.4.5",
     "express": "^4.17.1",
     "jose": "^2.0.3",
-    "mongoose": "^5.11.8",
+    "mongoose": "^5.11.11",
     "mqtt-pattern": "^1.2.0",
-    "set-interval-async": "^1.0.33"
+    "set-interval-async": "^1.0.34"
   },
   "devDependencies": {
-    "eslint": "^7.15.0",
+    "eslint": "^7.17.0",
     "eslint-config-google": "^0.14.0"
   }
 }
