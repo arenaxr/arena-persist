@@ -524,9 +524,23 @@ const runExpress = () => {
         if (jwk && !req.jwtPayload.subs.includes('realm/s/#')) { // Must have sub-all rights
             return tokenError(res);
         }
-        ArenaObject.distinct('sceneId', (err, sceneIds) => {
-            sceneIds.sort();
-            res.json(sceneIds);
+        ArenaObject.aggregate([
+            {
+                $group: {
+                    _id: {
+                        namespace: '$namespace',
+                        sceneId: '$sceneId',
+                    },
+                },
+            },
+            {
+                $sort: {
+                    '_id.namespace': 1,
+                    '_id.sceneId': 1,
+                },
+            },
+        ]).exec((err, scenes) => {
+            return res.json(scenes.map((s) => s._id.namespace + '/' + s._id.sceneId));
         });
     });
     app.get('/persist/:namespace/:sceneId', checkJWT, (req, res) => {
