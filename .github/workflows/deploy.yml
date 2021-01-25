@@ -22,5 +22,6 @@ jobs:
              cd  $TARGET
              git checkout master
              git pull
+             cd ..
              ./prod.sh stop arena-persist
              ./prod.sh up --force-recreate --build -d arena-persist
