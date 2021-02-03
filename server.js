@@ -139,7 +139,6 @@ async function runMQTT() {
             let msgJSON;
             let arenaObj;
             const now = new Date();
-            let isTemplateMsg = false;
             try {
                 msgJSON = JSON.parse(message.toString());
                 arenaObj = new ArenaObject({
@@ -151,12 +150,8 @@ async function runMQTT() {
                     namespace: topicSplit[2],
                     sceneId: topicSplit[3],
                 });
-                if (arenaObj.sceneId[0] === '@') {
-                    isTemplateMsg = true;
-                }
                 if (msgJSON.ttl) {
-                    // Don't expire template scene objects on save
-                    if (!isTemplateMsg && msgJSON.persist && msgJSON.persist !== false) {
+                    if (msgJSON.persist && msgJSON.persist !== false) {
                         arenaObj.expireAt = new Date(now.getTime() + (msgJSON.ttl * 1000));
                     }
                 }
@@ -266,26 +261,27 @@ async function runMQTT() {
                         rotation: a.rotation,
                     },
                 };
-                if (a.templateId) { // make sure template isn't empty exists
+                if (a.templateNamespace && a.templateSceneId) { // make sure template isn't empty
                     if (await ArenaObject.countDocuments( {
-                        namespace: arenaObj.namespace,
-                        sceneId: '@' + a.templateId,
+                        namespace: a.templateNamespace,
+                        sceneId: a.templateSceneId,
                     }) === 0) {
                         return;
                     }
                 }
-                if (a.instanceId) {
+                if (a.instanceId) { // Make sure this instance does not exist in target
                     if (await ArenaObject.countDocuments({
                         namespace: arenaObj.namespace,
                         sceneId: arenaObj.sceneId,
-                        object_id: a.templateId + '::' + a.instanceId,
+                        object_id: `${a.templateNamespace}/${a.templateSceneId}::${a.instanceId}`,
                     }) > 0) {
                         return;
                     }
                 }
                 await loadTemplate(
                     a.instanceId,
-                    a.templateId,
+                    a.templateNamespace,
+                    a.templateSceneId,
                     arenaObj.realm,
                     arenaObj.namespace,
                     arenaObj.sceneId,
@@ -352,17 +348,26 @@ const createArenaObj = async (object_id, realm, namespace, sceneId, attributes, 
  * target scene, first inside a templateContainer parent, then with each
  * object_id prefixed with the template and instance strings.
  * @param {string} instanceId - id of instance
- * @param {string} templateId - id of template
+ * @param {string} templateNamespace - namespace of template
+ * @param {string} templateSceneId - sceneId of template
  * @param {string} realm - MQTT topic realm
  * @param {string} targetNamespace - namespace of sceneId to insert new objs into
  * @param {string} targetSceneId - sceneId of object to insert new objs into
- * @param {Object} opts - various options to apply to Template container
- * @param {Number} opts.ttl - Duration TTL (seconds) of Template container
- * @param {boolean} opts.persist - Whether to persist *all* templated objects
- * @param {attributes} opts.attributes - data payload Template container
+ * @param {Object} [opts] - various options to apply to Template container
+ * @param {Number} [opts.ttl] - Duration TTL (seconds) of Template container
+ * @param {boolean} [opts.persist] - Whether to persist *all* templated objects
+ * @param {Object} [opts.attributes] - data payload Template container
  */
-const loadTemplate = async (instanceId, templateId, realm, targetNamespace, targetSceneId, opts) => {
-    const sceneObjs = await ArenaObject.find({namespace: targetNamespace, sceneId: '@' + templateId});
+const loadTemplate = async (
+    instanceId,
+    templateNamespace,
+    templateSceneId,
+    realm,
+    targetNamespace,
+    targetSceneId,
+    opts,
+) => {
+    const templateObjs = await ArenaObject.find({namespace: templateNamespace, sceneId: templateSceneId});
     const defaultOpts = {
         ttl: undefined,
         persist: false,
@@ -373,9 +378,9 @@ const loadTemplate = async (instanceId, templateId, realm, targetNamespace, targ
         },
     };
     const options = Object.assign(defaultOpts, opts);
-    const prefix = templateId + '::' + instanceId;
+    const prefix = `${templateNamespace}/${templateSceneId}::${a.instanceId}`;
     await createArenaObj(prefix, realm, targetNamespace, targetSceneId, options.pose, options.persist, options.ttl);
-    await asyncForEach(sceneObjs, async (obj) => {
+    await asyncForEach(templateObjs, async (obj) => {
         if (obj.attributes.parent) {
             obj.attributes.parent = prefix + '::' + obj.attributes.parent;
         } else {
