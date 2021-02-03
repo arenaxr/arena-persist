@@ -12,6 +12,7 @@ const MQTTPattern = require('mqtt-pattern');
 
 const express = require('express');
 const cookieParser = require('cookie-parser');
+const bodyParser = require('body-parser');
 
 let jwk;
 if (config.jwt_public_keyfile) {
@@ -475,9 +476,11 @@ const runExpress = () => {
     // Set and remove headers
     app.disable('x-powered-by');
 
-    let checkJWT = (req, res, next) => {
+    let checkJWTSubs = (req, res, next) => {
         next();
     };
+
+    let checkJWTPubs = checkJWTSubs;
 
     app.use((req, res, next) => {
         if (!mqttClient.connected) {
@@ -491,6 +494,18 @@ const runExpress = () => {
     const tokenError = (res) => {
         res.status(401);
         res.send('Error validating mqtt permissions');
+    };
+
+    const matchJWT = (topic, rights) => {
+        const len = rights.length;
+        let valid = false;
+        for (let i = 0; i < len; i++) {
+            if (MQTTPattern.matches(rights[i], topic)) {
+                valid = true;
+                break;
+            }
+        }
+        return valid;
     };
 
     if (jwk) {
@@ -507,23 +522,25 @@ const runExpress = () => {
                 return tokenError(res);
             }
         });
-        checkJWT = (req, res, next) => {
-            const sceneId = req.params.sceneId;
-            const namespace = req.params.namespace;
-            let valid = false;
-            const len = req.jwtPayload.subs.length;
-            for (let i = 0; i < len; i++) {
-                if (MQTTPattern.matches(req.jwtPayload.subs[i], `realm/s/${namespace}/${sceneId}`)) {
-                    valid = true;
-                    break;
-                }
+        checkJWTSubs = (req, res, next) => {
+            const {sceneId, namespace} = req.params;
+            const topic = `realm/s/${namespace}/${sceneId}`;
+            if (!matchJWT(topic, req.jwtPayload.subs)) {
+                return tokenError(res);
             }
-            if (!valid) {
+            next();
+        };
+        checkJWTPubs = (req, res, next) => {
+            const {sceneId, namespace} = req.params;
+            const topic = `realm/s/${namespace}/${sceneId}`;
+            if (!matchJWT(topic, req.jwtPayload.publ)) {
                 return tokenError(res);
             }
             next();
         };
     }
+
+    app.use(bodyParser.urlencoded({extended: true}));
 
     app.get('/persist/!allscenes', (req, res) => {
         if (jwk && !req.jwtPayload.subs.includes('realm/s/#')) { // Must have sub-all rights
@@ -548,17 +565,78 @@ const runExpress = () => {
             return res.json(scenes.map((s) => s._id.namespace + '/' + s._id.sceneId));
         });
     });
-    app.get('/persist/:namespace/:sceneId', checkJWT, (req, res) => {
+
+    app.post('/persist/:namespace/:sceneId', checkJWTPubs, async (req, res) => {
+        try {
+            const {
+                namespace: targetNamespace,
+                sceneId: targetSceneId,
+            } = req.params;
+            const {
+                action,
+                namespace: sourceNamespace,
+                sceneId: sourceSceneId,
+            } = req.body;
+            if (!sourceNamespace || !sourceSceneId) {
+                res.status(400);
+                return res.send('No namespace or sceneId specified');
+            }
+            if (action === 'clone') {
+                if (!matchJWT(`realm/s/${sourceNamespace}/${sourceSceneId}`, req.jwtPayload.subs)) {
+                    return tokenError(res);
+                }
+                const sourceObjectCount = await ArenaObject.countDocuments(
+                    {namespace: sourceNamespace, sceneId: sourceSceneId});
+                if (sourceObjectCount === 0) {
+                    res.status(404);
+                    return res.send('The source scene is empty!');
+                }
+                const targetObjectCount = await ArenaObject.countDocuments(
+                    {namespace: targetNamespace, sceneId: targetSceneId});
+                if (targetObjectCount !== 0) {
+                    res.status(409);
+                    return res.send('The target scene is not empty!');
+                }
+                await loadTemplate(
+                    'clone',
+                    sourceNamespace,
+                    sourceSceneId,
+                    'realm',
+                    targetNamespace,
+                    targetSceneId,
+                    {persist: true},
+                );
+                return res.json({result: 'success', objectsCloned: sourceObjectCount});
+            } else {
+                res.status(400);
+                return res.send('No valid action.');
+            }
+        } catch (err) {
+            res.status(500);
+            res.send();
+            console.log(err);
+        }
+    });
+
+    app.get('/persist/:namespace/:sceneId', checkJWTSubs, (req, res) => {
         const now = new Date();
         const query = {sceneId: req.params.sceneId, namespace: req.params.namespace, expireAt: {$not: {$lt: now}}};
         if (req.query.type) {
             query.type = req.query.type;
         }
-        ArenaObject.find(query, {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0}). then((records) => {
+        ArenaObject.find(query, {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0}).then((records) => {
             res.json(records);
         });
     });
-    app.get('/persist/:namespace/:sceneId/:objectId', checkJWT, (req, res) => {
+
+    app.delete('/persist/:namespace/:sceneId', checkJWTPubs, (req, res) => {
+        const query = {sceneId: req.params.sceneId, namespace: req.params.namespace};
+        ArenaObject.deleteMany(query).then((result) => {
+            res.json({result: 'success', scene: req.params.sceneId, deletedCount: result.deletedCount});
+        });
+    });
+
+    app.get('/persist/:namespace/:sceneId/:objectId', checkJWTSubs, (req, res) => {
         const now = new Date();
         ArenaObject.find({
             namespace: req.params.namespace,
