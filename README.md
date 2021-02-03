@@ -1,6 +1,10 @@
 # Arena Persistence service
 
-Listens on MQTT for ARENA objects to save to mongodb store
+Listens on MQTT for ARENA objects to save to mongodb store.
+
+A client then can make an HTTP request to the URL the server this service is running on the retrieve a list of
+persisted objects to load upon entering any scene.
+
 
 ## Install
 
@@ -10,11 +14,13 @@ Listens on MQTT for ARENA objects to save to mongodb store
 ## Usage
 
 ### Persistence
-Simply adding `persist: true` to the top level MQTT message for any `create` action and the object will be saved.
-A client then can make a HTTP request to the URL the server this service is running on the retrieve a list of 
-initially loaded objects upon entering any scene. 
 
-If an `update` message contains an explicit `persist: false`, then the `data` therein will not be saved in persistence.
+- An ARENA object is added to persist if it has `action: create` and  `persist: true`  in its MQTT message.
+  - If the object already exists in persist, it will be **replaced** in entirety.
+- A persisted ARENA object can be updated if it has `action: update`  and `persist: true` set in its MQTT message. The
+   properties in its `data` will be merged on top of the previously saved `data`.
+    - If an `update` message contains an explicit `overwrite: true`, then the `data` therein will **replace** what is saved in persistence.
+    - If an `update` message contains an explicit `persist: false`, then the `data` therein will not be updated to persistence. 
 
 ### TTL
 Adding a `ttl` (int seconds) to the top level MQTT message for any `create` action signals that the object
