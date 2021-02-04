@@ -274,7 +274,7 @@ async function runMQTT() {
                     if (await ArenaObject.countDocuments({
                         namespace: arenaObj.namespace,
                         sceneId: arenaObj.sceneId,
-                        object_id: `${a.templateNamespace}/${a.templateSceneId}::${a.instanceId}`,
+                        object_id: `${a.templateNamespace}|${a.templateSceneId}::${a.instanceId}`,
                     }) > 0) {
                         return;
                     }
@@ -379,7 +379,7 @@ const loadTemplate = async (
         },
     };
     const options = Object.assign(defaultOpts, opts);
-    const prefix = `${templateNamespace}/${templateSceneId}::${instanceId}`;
+    const prefix = `${templateNamespace}|${templateSceneId}::${instanceId}`;
     await createArenaObj(prefix, realm, targetNamespace, targetSceneId, options.pose, options.persist, options.ttl);
     await asyncForEach(templateObjs, async (obj) => {
         if (obj.attributes.parent) {
@@ -632,7 +632,7 @@ const runExpress = () => {
     app.delete('/persist/:namespace/:sceneId', checkJWTPubs, (req, res) => {
         const query = {sceneId: req.params.sceneId, namespace: req.params.namespace};
         ArenaObject.deleteMany(query).then((result) => {
-            res.json({result: 'success', scene: req.params.sceneId, deletedCount: result.deletedCount});
+            res.json({result: 'success', deletedCount: result.deletedCount});
         });
     });
 
