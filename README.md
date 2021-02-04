@@ -29,30 +29,26 @@ sent over pubsub. `ttl` implies that `persist` is `true`.
 
 ### Templates
 
-Templates are special scenes that can be instantiated in entirety in another scenes.
-
-Templates are crafted in a scene name prefixed with the `@` symbol, e.g. `@myTemplate`. The creation process is
-exactly same as any other scene with C(R)UD actions on pubsub, with exception that `ttl` values are not
-enforced. That is to say, the objects do not expire inside @template scenes, but rather activated upon instantiation.
+Any scene can be loaded as a **template** into another scene. This effectively clones all objects from the 
+source scene into the destination scene. 
 
 When a template is loaded, a parent container is first created in the target scene. This parent container follows the
-object id naming sceme: ``templateId::instanceId``, e.g. `myTemplate::instance_0`.
+object id naming scheme: `templateNamespace|templateSceneId::instanceId`, e.g. `public|lobby::instance_0`.
  
 Then every object inside the designated @template scene is replicated as descendents of the parent container. In this
 way, the parent can be repositioned, rotated, or scaled to adjust the template all at once.  The objects within
-the template follow the naming scheme ``templateId::instanceId::objectId``, e.g. `myTemplate::instance_0::cube1`.
+the template follow the naming scheme `templateNamespace|templateSceneId::instanceId::objectId`, e.g. `public|lobby::instance_0::cube1`.
 
-To load an instance of a template, send message to your desired target scene:
+To clone an instance of a scene, send a POST request to `/persist/:targetNamespace/:targetSceneId` with url-encoded fields:
 
-``{"action":"loadTemplate","data":{"templateId":"myTemplate","instanceId":"instance_0"},"object_id":"myClient"}``
-
-The `data` object should also contain `position`, `rotation`, or `scale` directives if intended not to all default
-to 0 (or 1 for scale) values. You may also set a `parent` to attach the entire parent container to another existing
-object in the target scene. 
+- `action=clone`
+- `sourceNamespace` - name of source scene namespace
+- `sourceSceneId` - name of source sceneId 
+- `allowNonEmptyTarget` (optional) - set to `true` allow templating into a non-empty destination scene
 
 After the template load, all objects behave as typical in any scene.
 
 *Notes:*
 
-- If a template scene is empty with no objects, or an instanceid already exists within a target scene, the template
-load will fail silently. 
+- If a template source scene is empty with no objects, or the instanceid already exists within a target scene, the template
+load will fail. 

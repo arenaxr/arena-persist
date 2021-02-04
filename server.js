@@ -252,6 +252,7 @@ async function runMQTT() {
                     persists.delete( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
                 }
                 break;
+            /*
             case 'loadTemplate':
                 const a = arenaObj.attributes;
                 const opts = {
@@ -289,6 +290,7 @@ async function runMQTT() {
                     opts,
                 );
                 break;
+                 */
             default:
                 // pass
             }
@@ -576,12 +578,13 @@ const runExpress = () => {
                 action,
                 namespace: sourceNamespace,
                 sceneId: sourceSceneId,
+                allowNonEmptyTarget=false,
             } = req.body;
-            if (!sourceNamespace || !sourceSceneId) {
-                res.status(400);
-                return res.send('No namespace or sceneId specified');
-            }
             if (action === 'clone') {
+                if (!sourceNamespace || !sourceSceneId) {
+                    res.status(400);
+                    return res.send('No namespace or sceneId specified');
+                }
                 if (!matchJWT(`realm/s/${sourceNamespace}/${sourceSceneId}`, req.jwtPayload.subs)) {
                     return tokenError(res);
                 }
@@ -591,11 +594,13 @@ const runExpress = () => {
                     res.status(404);
                     return res.send('The source scene is empty!');
                 }
-                const targetObjectCount = await ArenaObject.countDocuments(
-                    {namespace: targetNamespace, sceneId: targetSceneId});
-                if (targetObjectCount !== 0) {
-                    res.status(409);
-                    return res.send('The target scene is not empty!');
+                if (!allowNonEmptyTarget) {
+                    const targetObjectCount = await ArenaObject.countDocuments(
+                        {namespace: targetNamespace, sceneId: targetSceneId});
+                    if (targetObjectCount !== 0) {
+                        res.status(409);
+                        return res.send('The target scene is not empty!');
+                    }
                 }
                 await loadTemplate(
                     'clone',
