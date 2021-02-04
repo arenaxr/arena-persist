@@ -351,27 +351,29 @@ const createArenaObj = async (object_id, realm, namespace, sceneId, attributes, 
  * target scene, first inside a templateContainer parent, then with each
  * object_id prefixed with the template and instance strings.
  * @param {string} instanceId - id of instance
+ * @param {string} realm - MQTT topic realm
  * @param {string} templateNamespace - namespace of template
  * @param {string} templateSceneId - sceneId of template
- * @param {string} realm - MQTT topic realm
  * @param {string} targetNamespace - namespace of sceneId to insert new objs into
  * @param {string} targetSceneId - sceneId of object to insert new objs into
  * @param {Object} [opts] - various options to apply to Template container
+ * @param {boolean} [opts.noPrefix] - Do not prefix source to created objectIds
  * @param {Number} [opts.ttl] - Duration TTL (seconds) of Template container
  * @param {boolean} [opts.persist] - Whether to persist *all* templated objects
  * @param {Object} [opts.attributes] - data payload Template container
  */
 const loadTemplate = async (
     instanceId,
+    realm,
     templateNamespace,
     templateSceneId,
-    realm,
     targetNamespace,
     targetSceneId,
     opts,
 ) => {
     const templateObjs = await ArenaObject.find({namespace: templateNamespace, sceneId: templateSceneId});
     const defaultOpts = {
+        noPrefix: false,
         ttl: undefined,
         persist: false,
         attributes: {
@@ -381,16 +383,23 @@ const loadTemplate = async (
         },
     };
     const options = Object.assign(defaultOpts, opts);
-    const prefix = `${templateNamespace}|${templateSceneId}::${instanceId}`;
-    await createArenaObj(prefix, realm, targetNamespace, targetSceneId, options.pose, options.persist, options.ttl);
+    const templatePrefix = `${templateNamespace}|${templateSceneId}::${instanceId}`;
+    // Create template container, always prefixed
+    await createArenaObj(templatePrefix, realm, targetNamespace, targetSceneId,
+        options.pose, options.persist, options.ttl);
+    const objectsPrefix = options.noPrefix ? '' : `${templatePrefix}::`;
+    // Create all objects
     await asyncForEach(templateObjs, async (obj) => {
+        // Assign parent
         if (obj.attributes.parent) {
-            obj.attributes.parent = prefix + '::' + obj.attributes.parent;
+            // Name with prefix
+            obj.attributes.parent = objectsPrefix + obj.attributes.parent;
         } else {
-            obj.attributes.parent = prefix;
+            // Or child of template container
+            obj.attributes.parent = templatePrefix;
         }
         await createArenaObj(
-            prefix + '::' + obj.object_id,
+            objectsPrefix + obj.object_id,
             realm,
             targetNamespace,
             targetSceneId,
@@ -604,12 +613,12 @@ const runExpress = () => {
                 }
                 await loadTemplate(
                     'clone',
+                    'realm',
                     sourceNamespace,
                     sourceSceneId,
-                    'realm',
                     targetNamespace,
                     targetSceneId,
-                    {persist: true},
+                    {noPrefix: true, persist: true},
                 );
                 return res.json({result: 'success', objectsCloned: sourceObjectCount});
             } else {
