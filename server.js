@@ -379,7 +379,7 @@ const loadTemplate = async (
         },
     };
     const options = Object.assign(defaultOpts, opts);
-    const prefix = `${templateNamespace}/${templateSceneId}::${a.instanceId}`;
+    const prefix = `${templateNamespace}/${templateSceneId}::${instanceId}`;
     await createArenaObj(prefix, realm, targetNamespace, targetSceneId, options.pose, options.persist, options.ttl);
     await asyncForEach(templateObjs, async (obj) => {
         if (obj.attributes.parent) {
