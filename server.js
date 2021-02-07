@@ -12,7 +12,6 @@ const MQTTPattern = require('mqtt-pattern');
 
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const bodyParser = require('body-parser');
 
 let jwk;
 if (config.jwt_public_keyfile) {
@@ -551,7 +550,7 @@ const runExpress = () => {
         };
     }
 
-    app.use(bodyParser.urlencoded({extended: true}));
+    app.use(express.json());
 
     app.get('/persist/!allscenes', (req, res) => {
         if (jwk && !req.jwtPayload.subs.includes('realm/s/#')) { // Must have sub-all rights

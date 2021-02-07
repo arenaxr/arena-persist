@@ -39,12 +39,16 @@ Then every object inside the designated @template scene is replicated as descend
 way, the parent can be repositioned, rotated, or scaled to adjust the template all at once.  The objects within
 the template follow the naming scheme `templateNamespace|templateSceneId::instanceId::objectId`, e.g. `public|lobby::instance_0::cube1`.
 
-To clone an instance of a scene, send a POST request to `/persist/:targetNamespace/:targetSceneId` with url-encoded fields:
+To clone an instance of a scene, send a POST request to `/persist/:targetNamespace/:targetSceneId` with JSON payload:
 
-- `action=clone`
-- `sourceNamespace` - name of source scene namespace
-- `sourceSceneId` - name of source sceneId 
-- `allowNonEmptyTarget` (optional) - set to `true` allow templating into a non-empty destination scene
+```
+{
+  action: "clone",
+  sourceNamespace: <string>,     // name of source scene namespace
+  sourceSceneId: <string>,       // name of source scene sceneId 
+  allowNonEmptyTarget: <bool>,   // (optional) - set to `true` allow templating into a non-empty destination scene
+}
+```
 
 After the template load, all objects behave as typical in any scene.
 
