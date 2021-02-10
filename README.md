@@ -44,8 +44,8 @@ To clone an instance of a scene, send a POST request to `/persist/:targetNamespa
 ```
 {
   action: "clone",
-  sourceNamespace: <string>,     // name of source scene namespace
-  sourceSceneId: <string>,       // name of source scene sceneId 
+  namespace: <string>,     // name of source scene namespace
+  sceneId: <string>,       // name of source scene sceneId 
   allowNonEmptyTarget: <bool>,   // (optional) - set to `true` allow templating into a non-empty destination scene
 }
 ```
