@@ -357,6 +357,7 @@ const createArenaObj = async (object_id, realm, namespace, sceneId, attributes, 
  * @param {string} targetSceneId - sceneId of object to insert new objs into
  * @param {Object} [opts] - various options to apply to Template container
  * @param {boolean} [opts.noPrefix] - Do not prefix source to created objectIds
+ * @param {boolean}[opts.noParent] - Do not wrap all cloned objects in a parent container
  * @param {Number} [opts.ttl] - Duration TTL (seconds) of Template container
  * @param {boolean} [opts.persist] - Whether to persist *all* templated objects
  * @param {Object} [opts.attributes] - data payload Template container
@@ -373,6 +374,7 @@ const loadTemplate = async (
     const templateObjs = await ArenaObject.find({namespace: templateNamespace, sceneId: templateSceneId});
     const defaultOpts = {
         noPrefix: false,
+        noParent: false,
         ttl: undefined,
         persist: false,
         attributes: {
@@ -383,9 +385,12 @@ const loadTemplate = async (
     };
     const options = Object.assign(defaultOpts, opts);
     const templatePrefix = `${templateNamespace}|${templateSceneId}::${instanceId}`;
-    // Create template container, always prefixed
-    await createArenaObj(templatePrefix, realm, targetNamespace, targetSceneId,
-        options.attributes, options.persist, options.ttl);
+    // Create template container, always
+    if (!options.noParent) {
+        await createArenaObj(templatePrefix, realm, targetNamespace,
+            targetSceneId,
+            options.attributes, options.persist, options.ttl);
+    }
     const objectsPrefix = options.noPrefix ? '' : `${templatePrefix}::`;
     // Create all objects
     await asyncForEach(templateObjs, async (obj) => {
@@ -617,7 +622,7 @@ const runExpress = () => {
                     sourceSceneId,
                     targetNamespace,
                     targetSceneId,
-                    {noPrefix: true, persist: true},
+                    {noPrefix: true, persist: true, noParent: true},
                 );
                 return res.json({result: 'success', objectsCloned: sourceObjectCount});
             } else {
