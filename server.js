@@ -398,7 +398,7 @@ const loadTemplate = async (
         if (obj.attributes.parent) {
             // Name with prefix
             obj.attributes.parent = objectsPrefix + obj.attributes.parent;
-        } else {
+        } else if (!options.noParent) {
             // Or child of template container
             obj.attributes.parent = templatePrefix;
         }
