@@ -377,7 +377,7 @@ const loadTemplate = async (
         persist: false,
         attributes: {
             position: {x: 0, y: 0, z: 0},
-            rotation: {x: 0, y: 0, z: 0, w: 0},
+            rotation: {x: 0, y: 0, z: 0},
             object_type: 'templateContainer',
         },
     };
@@ -385,7 +385,7 @@ const loadTemplate = async (
     const templatePrefix = `${templateNamespace}|${templateSceneId}::${instanceId}`;
     // Create template container, always prefixed
     await createArenaObj(templatePrefix, realm, targetNamespace, targetSceneId,
-        options.pose, options.persist, options.ttl);
+        options.attributes, options.persist, options.ttl);
     const objectsPrefix = options.noPrefix ? '' : `${templatePrefix}::`;
     // Create all objects
     await asyncForEach(templateObjs, async (obj) => {
