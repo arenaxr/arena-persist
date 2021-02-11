@@ -302,6 +302,7 @@ async function runMQTT() {
 /**
  * Creates an arena object with given paramters
  * @param {string} object_id - id of object
+ * @param {string} type - generally "object" or "scene-options"
  * @param {string} realm - MQTT topic realm
  * @param {string} namespace - namespace of sceneId
  * @param {string} sceneId - sceneId of object
@@ -310,13 +311,13 @@ async function runMQTT() {
  * @param {Number} [ttl] - ttl in seconds
 */
 // eslint-disable-next-line camelcase
-const createArenaObj = async (object_id, realm, namespace, sceneId, attributes, persist, ttl) => {
+const createArenaObj = async (object_id, type, realm, namespace, sceneId, attributes, persist, ttl) => {
     const topic = `realm/s/${namespace}/${sceneId}`;
     let expireAt;
     const msg = {
         object_id: object_id,
         action: 'create',
-        type: 'object',
+        type: type,
         data: attributes,
     };
     if (persist || ttl) {
@@ -328,7 +329,7 @@ const createArenaObj = async (object_id, realm, namespace, sceneId, attributes, 
     }
     const arenaObj = new ArenaObject({
         object_id: object_id,
-        type: 'object',
+        type: type,
         attributes: attributes,
         expireAt: expireAt,
         realm: realm,
@@ -387,7 +388,7 @@ const loadTemplate = async (
     const templatePrefix = `${templateNamespace}|${templateSceneId}::${instanceId}`;
     // Create template container, always
     if (!options.noParent) {
-        await createArenaObj(templatePrefix, realm, targetNamespace,
+        await createArenaObj(templatePrefix, 'object', realm, targetNamespace,
             targetSceneId,
             options.attributes, options.persist, options.ttl);
     }
@@ -404,6 +405,7 @@ const loadTemplate = async (
         }
         await createArenaObj(
             objectsPrefix + obj.object_id,
+            obj.type,
             realm,
             targetNamespace,
             targetSceneId,
