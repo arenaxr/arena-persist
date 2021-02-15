@@ -583,6 +583,35 @@ const runExpress = () => {
         });
     });
 
+    app.get('/persist/:namespace/!allscenes', (req, res) => {
+        const {namespace} = req.params;
+        if (jwk && !matchJWT(`realm/s/${namespace}/#`, req.jwtPayload.subs)) { // Must have sub-all public rights
+            return tokenError(res);
+        }
+        ArenaObject.aggregate([
+            {
+                $match: {
+                    namespace,
+                },
+            },
+            {
+                $group: {
+                    _id: {
+                        namespace: '$namespace',
+                        sceneId: '$sceneId',
+                    },
+                },
+            },
+            {
+                $sort: {
+                    '_id.sceneId': 1,
+                },
+            },
+        ]).exec((err, scenes) => {
+            return res.json(scenes.map((s) => `${namespace}/${s._id.sceneId}`));
+        });
+    });
+
     app.post('/persist/:namespace/:sceneId', checkJWTPubs, async (req, res) => {
         try {
             const {
