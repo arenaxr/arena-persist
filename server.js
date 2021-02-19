@@ -502,7 +502,7 @@ const runExpress = () => {
     app.use((req, res, next) => {
         if (!mqttClient.connected) {
             res.status(503);
-            res.send('Disconnected from MQTT');
+            res.json('Disconnected from MQTT');
             return next('Disconnected from MQTT');
         }
         next();
@@ -510,7 +510,7 @@ const runExpress = () => {
 
     const tokenError = (res) => {
         res.status(401);
-        res.send('Error validating mqtt permissions');
+        res.json('Error validating mqtt permissions');
     };
 
     const matchJWT = (topic, rights) => {
@@ -627,7 +627,7 @@ const runExpress = () => {
             if (action === 'clone') {
                 if (!sourceNamespace || !sourceSceneId) {
                     res.status(400);
-                    return res.send('No namespace or sceneId specified');
+                    return res.json('No namespace or sceneId specified');
                 }
                 if (!matchJWT(`realm/s/${sourceNamespace}/${sourceSceneId}`, req.jwtPayload.subs)) {
                     return tokenError(res);
@@ -636,14 +636,14 @@ const runExpress = () => {
                     {namespace: sourceNamespace, sceneId: sourceSceneId});
                 if (sourceObjectCount === 0) {
                     res.status(404);
-                    return res.send('The source scene is empty!');
+                    return res.json('The source scene is empty!');
                 }
                 if (!allowNonEmptyTarget) {
                     const targetObjectCount = await ArenaObject.countDocuments(
                         {namespace: targetNamespace, sceneId: targetSceneId});
                     if (targetObjectCount !== 0) {
                         res.status(409);
-                        return res.send('The target scene is not empty!');
+                        return res.json('The target scene is not empty!');
                     }
                 }
                 await loadTemplate(
@@ -658,11 +658,11 @@ const runExpress = () => {
                 return res.json({result: 'success', objectsCloned: sourceObjectCount});
             } else {
                 res.status(400);
-                return res.send('No valid action.');
+                return res.json('No valid action.');
             }
         } catch (err) {
             res.status(500);
-            res.send();
+            res.json();
             console.log(err);
         }
     });
