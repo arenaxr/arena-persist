@@ -513,6 +513,16 @@ const runExpress = () => {
         res.json('Error validating mqtt permissions');
     };
 
+    const tokenSubError = (res) => {
+        res.status(401);
+        res.json('You have not been granted read access');
+    };
+
+    const tokenPubError = (res) => {
+        res.status(401);
+        res.json('You have not been granted write access');
+    };
+
     const matchJWT = (topic, rights) => {
         const len = rights.length;
         let valid = false;
@@ -543,7 +553,7 @@ const runExpress = () => {
             const {sceneId, namespace} = req.params;
             const topic = `realm/s/${namespace}/${sceneId}`;
             if (!matchJWT(topic, req.jwtPayload.subs)) {
-                return tokenError(res);
+                return tokenSubError(res);
             }
             next();
         };
@@ -551,7 +561,7 @@ const runExpress = () => {
             const {sceneId, namespace} = req.params;
             const topic = `realm/s/${namespace}/${sceneId}`;
             if (!matchJWT(topic, req.jwtPayload.publ)) {
-                return tokenError(res);
+                return tokenPubError(res);
             }
             next();
         };
@@ -561,7 +571,7 @@ const runExpress = () => {
 
     app.get('/persist/!allscenes', (req, res) => {
         if (jwk && !req.jwtPayload.subs.includes('realm/s/#')) { // Must have sub-all rights
-            return tokenError(res);
+            return tokenSubError(res);
         }
         ArenaObject.aggregate([
             {
@@ -586,7 +596,7 @@ const runExpress = () => {
     app.get('/persist/:namespace/!allscenes', (req, res) => {
         const {namespace} = req.params;
         if (jwk && !matchJWT(`realm/s/${namespace}/#`, req.jwtPayload.subs)) { // Must have sub-all public rights
-            return tokenError(res);
+            return tokenSubError(res);
         }
         ArenaObject.aggregate([
             {
@@ -630,7 +640,7 @@ const runExpress = () => {
                     return res.json('No namespace or sceneId specified');
                 }
                 if (!matchJWT(`realm/s/${sourceNamespace}/${sourceSceneId}`, req.jwtPayload.subs)) {
-                    return tokenError(res);
+                    return tokenSubError(res);
                 }
                 const sourceObjectCount = await ArenaObject.countDocuments(
                     {namespace: sourceNamespace, sceneId: sourceSceneId});
