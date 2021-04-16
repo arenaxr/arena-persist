@@ -7,11 +7,10 @@ const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
 const {setIntervalAsync} = require('set-interval-async/dynamic');
 const {clearIntervalAsync} = require('set-interval-async');
-const {JWT, JWK} = require('jose');
-const MQTTPattern = require('mqtt-pattern');
+const {JWK} = require('jose');
 
-const express = require('express');
-const cookieParser = require('cookie-parser');
+const {runExpress} = require('./express_server');
+const {asyncForEach, asyncMapForEach, filterNulls, flatten} = require('./utils');
 
 let jwk;
 if (config.jwt_public_keyfile) {
@@ -63,7 +62,7 @@ mongoose.connect(config.mongodb.uri, {
 });
 
 /**
-* Initializes MQTT connection and setts event handlers
+ * Initializes MQTT connection and setts event handlers
  */
 async function runMQTT() {
     const connectOpts = {
@@ -127,176 +126,229 @@ async function runMQTT() {
             await mqttClient.publish(config.mqtt.statusTopic,
                 'Persistence service connected: ' + config.mqtt.topic_realm);
         });
-        mqttClient.on('message', async (topic, message) => {
-            const topicSplit = topic.split('/');
-            /*
-            Topic tokens by forward slash:
-            - 0: realm
-            - 1: type [s, n, r, topology, flows]
-            - 2: namespace
-            - 3: sceneId
-            */
-            let msgJSON;
-            let arenaObj;
-            const now = new Date();
-            try {
-                msgJSON = JSON.parse(message.toString());
-                arenaObj = new ArenaObject({
-                    object_id: msgJSON.object_id,
-                    attributes: msgJSON.data,
-                    expireAt: undefined,
-                    type: msgJSON.type,
-                    realm: topicSplit[0],
-                    namespace: topicSplit[2],
-                    sceneId: topicSplit[3],
-                });
-                if (msgJSON.ttl) {
-                    if (msgJSON.persist && msgJSON.persist !== false) {
-                        arenaObj.expireAt = new Date(now.getTime() + (msgJSON.ttl * 1000));
-                    }
-                }
-            } catch (e) {
-                return;
-            }
-            const insertObj = arenaObj.toObject();
-            delete insertObj._id;
-            switch (msgJSON.action) {
-            case 'create':
-                if (msgJSON.persist === true) {
-                    await ArenaObject.findOneAndUpdate({
-                        object_id: arenaObj.object_id,
-                        namespace: arenaObj.namespace,
-                        sceneId: arenaObj.sceneId,
-                    }, insertObj, {
-                        upsert: true,
-                        runValidators: true,
-                    });
-                    if (arenaObj.expireAt) {
-                        expirations.set(`${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`, arenaObj);
-                    }
-                    persists.add( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
-                }
-                break;
-            case 'update':
-                if (msgJSON.persist && msgJSON.persist !== false) {
-                    if (persists.has(`${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
-                        if (msgJSON.overwrite) {
-                            await ArenaObject.findOneAndReplace(
-                                {
-                                    object_id: arenaObj.object_id,
-                                    namespace: arenaObj.namespace,
-                                    sceneId: arenaObj.sceneId,
-                                },
-                                insertObj,
-                                {},
-                                (err) => {
-                                    if (err) {
-                                        console.log('Does not exist:', arenaObj.object_id);
-                                    }
-                                },
-                            );
-                        } else {
-                            const [sets, unSets] = filterNulls(flatten( {attributes: insertObj.attributes}));
-                            await ArenaObject.findOneAndUpdate(
-                                {
-                                    object_id: arenaObj.object_id,
-                                    namespace: arenaObj.namespace,
-                                    sceneId: arenaObj.sceneId,
-                                },
-                                {$set: sets, $unset: unSets},
-                                {},
-                                (err) => {
-                                    if (err) {
-                                        console.log('Does not exist:', arenaObj.object_id);
-                                    }
-                                },
-                            );
-                        }
-                        if (arenaObj.expireAt) {
-                            expirations.set(
-                                `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
-                                arenaObj,
-                            );
-                        }
-                    }
-                }
-                break;
-            case 'delete':
-                if (persists.has( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
-                    await ArenaObject.deleteOne({
-                        object_id: arenaObj.object_id,
-                        namespace: arenaObj.namespace,
-                        sceneId: arenaObj.sceneId,
-                    }, (err) => {
-                        if (err) {
-                            console.log( 'Does not exist or already deleted:', arenaObj.object_id);
-                        }
-                    });
-                    await ArenaObject.deleteMany({
-                        'attributes.parent': arenaObj.object_id,
-                        'namespace': arenaObj.namespace,
-                        'sceneId': arenaObj.sceneId,
-                    });
-                    if (expirations.has( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
-                        expirations.delete( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
-                    }
-                    if (arenaObj.object_id.split('::').length - 1 === 1) { // Template container ID, 1 pair of '::'
-                        const r = RegExp('^' + arenaObj.object_id + '::');
-                        await ArenaObject.deleteMany({
-                            'attributes.parent': r,
-                            'namespace': arenaObj.namespace,
-                            'sceneId': arenaObj.sceneId,
-                        });
-                    }
-                    persists.delete( `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
-                }
-                break;
-            /*
-            case 'loadTemplate':
-                const a = arenaObj.attributes;
-                const opts = {
-                    ttl: a.ttl,
-                    persist: a.persist,
-                    pose: {
-                        position: a.position,
-                        rotation: a.rotation,
-                    },
-                };
-                if (a.templateNamespace && a.templateSceneId) { // make sure template isn't empty
-                    if (await ArenaObject.countDocuments( {
-                        namespace: a.templateNamespace,
-                        sceneId: a.templateSceneId,
-                    }) === 0) {
-                        return;
-                    }
-                }
-                if (a.instanceId) { // Make sure this instance does not exist in target
-                    if (await ArenaObject.countDocuments({
-                        namespace: arenaObj.namespace,
-                        sceneId: arenaObj.sceneId,
-                        object_id: `${a.templateNamespace}|${a.templateSceneId}::${a.instanceId}`,
-                    }) > 0) {
-                        return;
-                    }
-                }
-                await loadTemplate(
-                    a.instanceId,
-                    a.templateNamespace,
-                    a.templateSceneId,
-                    arenaObj.realm,
-                    arenaObj.namespace,
-                    arenaObj.sceneId,
-                    opts,
-                );
-                break;
-                 */
-            default:
-                // pass
-            }
+        mqttClient.on('message', arenaMsgHandler);
+        runExpress({
+            ArenaObject, mqttClient, jwk, loadTemplate,
         });
     } catch (e) {
         console.log(e.stack);
     }
+}
+
+/**
+ * Handles incoming mqtt messages to update persist
+ * @param {string} topic
+ * @param {string} message
+ * @return {Promise<void>}
+ */
+async function arenaMsgHandler(topic, message) {
+    const topicSplit = topic.split('/');
+    /*
+    Topic tokens by forward slash:
+    - 0: realm
+    - 1: type [s, n, r, topology, flows]
+    - 2: namespace
+    - 3: sceneId
+    */
+    let msgJSON;
+    let arenaObj;
+    const now = new Date();
+    try {
+        msgJSON = JSON.parse(message.toString());
+        arenaObj = new ArenaObject({
+            object_id: msgJSON.object_id,
+            attributes: msgJSON.data,
+            expireAt: undefined,
+            type: msgJSON.type,
+            realm: topicSplit[0],
+            namespace: topicSplit[2],
+            sceneId: topicSplit[3],
+        });
+        if (msgJSON.ttl) {
+            if (msgJSON.persist && msgJSON.persist !== false) {
+                arenaObj.expireAt = new Date(now.getTime() + (msgJSON.ttl * 1000));
+            }
+        }
+    } catch (e) {
+        return;
+    }
+    const insertObj = arenaObj.toObject();
+    delete insertObj._id;
+    switch (msgJSON.action) {
+    case 'create':
+        if (msgJSON.persist === true) {
+            await ArenaObject.findOneAndUpdate({
+                object_id: arenaObj.object_id,
+                namespace: arenaObj.namespace,
+                sceneId: arenaObj.sceneId,
+            }, insertObj, {
+                upsert: true,
+                runValidators: true,
+            });
+            if (arenaObj.expireAt) {
+                expirations.set(
+                    `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
+                    arenaObj);
+            }
+            persists.add(
+                `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
+        }
+        break;
+    case 'update':
+        if (msgJSON.persist && msgJSON.persist !== false) {
+            if (persists.has(
+                `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
+                if (msgJSON.overwrite) {
+                    await ArenaObject.findOneAndReplace(
+                        {
+                            object_id: arenaObj.object_id,
+                            namespace: arenaObj.namespace,
+                            sceneId: arenaObj.sceneId,
+                        },
+                        insertObj,
+                        {},
+                        (err) => {
+                            if (err) {
+                                console.log('Does not exist:',
+                                    arenaObj.object_id);
+                            }
+                        },
+                    );
+                } else {
+                    const [sets, unSets] = filterNulls(
+                        flatten({attributes: insertObj.attributes}));
+                    await ArenaObject.findOneAndUpdate(
+                        {
+                            object_id: arenaObj.object_id,
+                            namespace: arenaObj.namespace,
+                            sceneId: arenaObj.sceneId,
+                        },
+                        {$set: sets, $unset: unSets},
+                        {},
+                        (err) => {
+                            if (err) {
+                                console.log('Does not exist:',
+                                    arenaObj.object_id);
+                            }
+                        },
+                    );
+                }
+                if (arenaObj.expireAt) {
+                    expirations.set(
+                        `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
+                        arenaObj,
+                    );
+                }
+            }
+        }
+        break;
+    case 'delete':
+        if (persists.has(
+            `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
+            await ArenaObject.deleteOne({
+                object_id: arenaObj.object_id,
+                namespace: arenaObj.namespace,
+                sceneId: arenaObj.sceneId,
+            }, (err) => {
+                if (err) {
+                    console.log('Does not exist or already deleted:',
+                        arenaObj.object_id);
+                }
+            });
+            await ArenaObject.deleteMany({
+                'attributes.parent': arenaObj.object_id,
+                'namespace': arenaObj.namespace,
+                'sceneId': arenaObj.sceneId,
+            });
+            if (expirations.has(
+                `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
+                expirations.delete(
+                    `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
+            }
+            if (arenaObj.object_id.split('::').length - 1 === 1) { // Template container ID, 1 pair of '::'
+                const r = RegExp('^' + arenaObj.object_id + '::');
+                await ArenaObject.deleteMany({
+                    'attributes.parent': r,
+                    'namespace': arenaObj.namespace,
+                    'sceneId': arenaObj.sceneId,
+                });
+            }
+            persists.delete(
+                `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
+        }
+        break;
+    case 'loadTemplate':
+        await handleLoadTemplate(arenaObj);
+        break;
+    case 'getPersist':
+        await handleGetPersist(arenaObj, topic);
+        break;
+    default:
+        // pass
+    }
+}
+
+/**
+ * @param {object} arenaObj
+ * @param {string} topic
+ */
+async function handleGetPersist(arenaObj, topic) {
+    const now = new Date();
+    const query = {
+        sceneId: arenaObj.sceneId,
+        namespace: arenaObj.namespace,
+        expireAt: {$not: {$lt: now}},
+    };
+    ArenaObject.find(query,
+        {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0}).
+        then((records) => {
+            mqttClient.publish(topic, JSON.stringify({
+                object_id: arenaObj.object_id,
+                data: records,
+            }));
+        });
+}
+
+/**
+ * Handles loadTemplate requests from MQTT
+ * @param {object} arenaObj - Following ArenaObject schema
+ */
+async function handleLoadTemplate(arenaObj) {
+    const a = arenaObj.attributes;
+    const opts = {
+        ttl: a.ttl,
+        persist: a.persist,
+        pose: {
+            position: a.position,
+            rotation: a.rotation,
+        },
+    };
+    if (a.templateNamespace && a.templateSceneId) { // make sure template isn't empty
+        if (await ArenaObject.countDocuments({
+            namespace: a.templateNamespace,
+            sceneId: a.templateSceneId,
+        }) === 0) {
+            return;
+        }
+    }
+    if (a.instanceId) { // Make sure this instance does not exist in target
+        if (await ArenaObject.countDocuments({
+            namespace: arenaObj.namespace,
+            sceneId: arenaObj.sceneId,
+            object_id: `${a.templateNamespace}|${a.templateSceneId}::${a.instanceId}`,
+        }) > 0) {
+            return;
+        }
+    }
+    await loadTemplate(
+        a.instanceId,
+        a.templateNamespace,
+        a.templateSceneId,
+        arenaObj.realm,
+        arenaObj.namespace,
+        arenaObj.sceneId,
+        opts,
+    );
 }
 
 /**
@@ -309,9 +361,10 @@ async function runMQTT() {
  * @param {Object} attributes - data payload of message
  * @param {boolean} [persist] - Whether to persist this object
  * @param {Number} [ttl] - ttl in seconds
-*/
-// eslint-disable-next-line camelcase
-const createArenaObj = async (object_id, type, realm, namespace, sceneId, attributes, persist, ttl) => {
+ */
+const createArenaObj = async (
+    // eslint-disable-next-line camelcase
+    object_id, type, realm, namespace, sceneId, attributes, persist, ttl) => {
     const topic = `realm/s/${namespace}/${sceneId}`;
     let expireAt;
     const msg = {
@@ -372,7 +425,8 @@ const loadTemplate = async (
     targetSceneId,
     opts,
 ) => {
-    const templateObjs = await ArenaObject.find({namespace: templateNamespace, sceneId: templateSceneId});
+    const templateObjs = await ArenaObject.find(
+        {namespace: templateNamespace, sceneId: templateSceneId});
     const defaultOpts = {
         noPrefix: false,
         noParent: false,
@@ -428,285 +482,11 @@ const publishExpires = async () => {
             await mqttClient.publish(topic, JSON.stringify(msg));
             expirations.delete(key);
             persists.delete(key);
-            await ArenaObject.deleteMany( {
+            await ArenaObject.deleteMany({
                 'attributes.parent': obj.object_id,
                 'namespace': obj.namespace,
                 'sceneId': obj.sceneId,
             });
         }
     });
-};
-
-
-/**
- * Performs forEach callback on an array in async manner.
- * @param {Array} array - Array or array-like object over which to iterate.
- * @param {function} callback - The function to call, wait await, for every element.
- */
-async function asyncForEach(array, callback) {
-    for (let index = 0; index < array.length; index++) {
-        await callback(array[index], index, array);
-    }
-}
-
-/**
- * Performs map callback on an array in async manner.
- * @param {Array} m - Array or array-like object over which to iterate.
- * @param {function} callback - The function to call, wait await, for every element.
- */
-async function asyncMapForEach(m, callback) {
-    for (const e of m.entries()) {
-        await callback(e[1], e[0]);
-    }
-}
-
-const isPlainObj = (o) => Boolean(
-    o && o.constructor && o.constructor.prototype && o.constructor.prototype.hasOwnProperty('isPrototypeOf'),
-);
-
-const flatten = (obj, keys = []) => {
-    return Object.keys(obj).reduce((acc, key) => {
-        return Object.assign(acc, isPlainObj(obj[key]) ? flatten(obj[key], keys.concat(key)) : {
-            [keys.concat(key).join('.')]: obj[key],
-        });
-    }, {});
-};
-
-const filterNulls = (obj) => {
-    const sets = {};
-    const unSets = {};
-    for (const key in obj) {
-        if (obj.hasOwnProperty(key)) {
-            if (obj[key] === null) {
-                unSets[key] = '';
-            } else {
-                sets[key] = obj[key];
-            }
-        }
-    }
-    return [sets, unSets];
-};
-
-const runExpress = () => {
-    const app = express();
-
-    // Set and remove headers
-    app.disable('x-powered-by');
-
-    let checkJWTSubs = (req, res, next) => {
-        next();
-    };
-
-    let checkJWTPubs = checkJWTSubs;
-
-    app.use((req, res, next) => {
-        if (!mqttClient.connected) {
-            res.status(503);
-            res.json('Disconnected from MQTT');
-            return next('Disconnected from MQTT');
-        }
-        next();
-    });
-
-    const tokenError = (res) => {
-        res.status(401);
-        res.json('Error validating mqtt permissions');
-    };
-
-    const tokenSubError = (res) => {
-        res.status(401);
-        res.json('You have not been granted read access');
-    };
-
-    const tokenPubError = (res) => {
-        res.status(401);
-        res.json('You have not been granted write access');
-    };
-
-    const matchJWT = (topic, rights) => {
-        const len = rights.length;
-        let valid = false;
-        for (let i = 0; i < len; i++) {
-            if (MQTTPattern.matches(rights[i], topic)) {
-                valid = true;
-                break;
-            }
-        }
-        return valid;
-    };
-
-    if (jwk) {
-        app.use(cookieParser());
-        app.use(async (req, res, next) => {
-            const token = req.cookies.mqtt_token;
-            if (!token) {
-                return tokenError(res);
-            }
-            try {
-                req.jwtPayload = JWT.verify(token, jwk);
-                next();
-            } catch (err) {
-                return tokenError(res);
-            }
-        });
-        checkJWTSubs = (req, res, next) => {
-            const {sceneId, namespace} = req.params;
-            const topic = `realm/s/${namespace}/${sceneId}`;
-            if (!matchJWT(topic, req.jwtPayload.subs)) {
-                return tokenSubError(res);
-            }
-            next();
-        };
-        checkJWTPubs = (req, res, next) => {
-            const {sceneId, namespace} = req.params;
-            const topic = `realm/s/${namespace}/${sceneId}`;
-            if (!matchJWT(topic, req.jwtPayload.publ)) {
-                return tokenPubError(res);
-            }
-            next();
-        };
-    }
-
-    app.use(express.json());
-
-    app.get('/persist/!allscenes', (req, res) => {
-        if (jwk && !req.jwtPayload.subs.includes('realm/s/#')) { // Must have sub-all rights
-            return tokenSubError(res);
-        }
-        ArenaObject.aggregate([
-            {
-                $group: {
-                    _id: {
-                        namespace: '$namespace',
-                        sceneId: '$sceneId',
-                    },
-                },
-            },
-            {
-                $sort: {
-                    '_id.namespace': 1,
-                    '_id.sceneId': 1,
-                },
-            },
-        ]).exec((err, scenes) => {
-            return res.json(scenes.map((s) => s._id.namespace + '/' + s._id.sceneId));
-        });
-    });
-
-    app.get('/persist/:namespace/!allscenes', (req, res) => {
-        const {namespace} = req.params;
-        if (jwk && !matchJWT(`realm/s/${namespace}/#`, req.jwtPayload.subs)) { // Must have sub-all public rights
-            return tokenSubError(res);
-        }
-        ArenaObject.aggregate([
-            {
-                $match: {
-                    namespace,
-                },
-            },
-            {
-                $group: {
-                    _id: {
-                        namespace: '$namespace',
-                        sceneId: '$sceneId',
-                    },
-                },
-            },
-            {
-                $sort: {
-                    '_id.sceneId': 1,
-                },
-            },
-        ]).exec((err, scenes) => {
-            return res.json(scenes.map((s) => `${namespace}/${s._id.sceneId}`));
-        });
-    });
-
-    app.post('/persist/:namespace/:sceneId', checkJWTPubs, async (req, res) => {
-        try {
-            const {
-                namespace: targetNamespace,
-                sceneId: targetSceneId,
-            } = req.params;
-            const {
-                action,
-                namespace: sourceNamespace,
-                sceneId: sourceSceneId,
-                allowNonEmptyTarget=false,
-            } = req.body;
-            if (action === 'clone') {
-                if (!sourceNamespace || !sourceSceneId) {
-                    res.status(400);
-                    return res.json('No namespace or sceneId specified');
-                }
-                if (!matchJWT(`realm/s/${sourceNamespace}/${sourceSceneId}`, req.jwtPayload.subs)) {
-                    return tokenSubError(res);
-                }
-                const sourceObjectCount = await ArenaObject.countDocuments(
-                    {namespace: sourceNamespace, sceneId: sourceSceneId});
-                if (sourceObjectCount === 0) {
-                    res.status(404);
-                    return res.json('The source scene is empty!');
-                }
-                if (!allowNonEmptyTarget) {
-                    const targetObjectCount = await ArenaObject.countDocuments(
-                        {namespace: targetNamespace, sceneId: targetSceneId});
-                    if (targetObjectCount !== 0) {
-                        res.status(409);
-                        return res.json('The target scene is not empty!');
-                    }
-                }
-                await loadTemplate(
-                    'clone',
-                    'realm',
-                    sourceNamespace,
-                    sourceSceneId,
-                    targetNamespace,
-                    targetSceneId,
-                    {noPrefix: true, persist: true, noParent: true},
-                );
-                return res.json({result: 'success', objectsCloned: sourceObjectCount});
-            } else {
-                res.status(400);
-                return res.json('No valid action.');
-            }
-        } catch (err) {
-            res.status(500);
-            res.json();
-            console.log(err);
-        }
-    });
-
-    app.get('/persist/:namespace/:sceneId', checkJWTSubs, (req, res) => {
-        const now = new Date();
-        const query = {sceneId: req.params.sceneId, namespace: req.params.namespace, expireAt: {$not: {$lt: now}}};
-        if (req.query.type) {
-            query.type = req.query.type;
-        }
-        ArenaObject.find(query, {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0}).then((records) => {
-            res.json(records);
-        });
-    });
-
-    app.delete('/persist/:namespace/:sceneId', checkJWTPubs, (req, res) => {
-        const query = {sceneId: req.params.sceneId, namespace: req.params.namespace};
-        ArenaObject.deleteMany(query).then((result) => {
-            res.json({result: 'success', deletedCount: result.deletedCount});
-        });
-    });
-
-    app.get('/persist/:namespace/:sceneId/:objectId', checkJWTSubs, (req, res) => {
-        const now = new Date();
-        ArenaObject.find({
-            namespace: req.params.namespace,
-            sceneId: req.params.sceneId,
-            object_id: req.params.objectId,
-            expireAt: {$not: {$lt: now}},
-        }, {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0},
-        ).then((msgs) => {
-            res.json(msgs);
-        });
-    });
-
-    app.listen(8884);
 };
