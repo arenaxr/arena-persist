@@ -25,7 +25,7 @@ const isPlainObj = (o) => Boolean(
     o.constructor.prototype.hasOwnProperty('isPrototypeOf'),
 );
 
-exports.flatten = (obj, keys = []) => {
+const flatten = (obj, keys = []) => {
     return Object.keys(obj).reduce((acc, key) => {
         return Object.assign(acc,
             isPlainObj(obj[key]) ? flatten(obj[key], keys.concat(key)) : {
@@ -33,6 +33,8 @@ exports.flatten = (obj, keys = []) => {
             });
     }, {});
 };
+
+exports.flatten = flatten;
 
 exports.filterNulls = (obj) => {
     const sets = {};
