@@ -56,7 +56,7 @@ mongoose.connect(config.mongodb.uri, {
         '_id': 0,
     })).map((o) => `${o.namespace}|${o.sceneId}|${o.object_id}`));
     await runMQTT();
-    runExpress();
+    await runExpress({ArenaObject, mqttClient, jwk, loadTemplate});
 }, (err) => {
     console.log('Mongodb Connection Error: ', err);
 });
