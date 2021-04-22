@@ -127,9 +127,6 @@ async function runMQTT() {
                 'Persistence service connected: ' + config.mqtt.topic_realm);
         });
         mqttClient.on('message', arenaMsgHandler);
-        runExpress({
-            ArenaObject, mqttClient, jwk, loadTemplate,
-        });
     } catch (e) {
         console.log(e.stack);
     }
