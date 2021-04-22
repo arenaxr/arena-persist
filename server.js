@@ -300,6 +300,7 @@ async function handleGetPersist(arenaObj, topic) {
         {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0}).
         then((records) => {
             mqttClient.publish(topic, JSON.stringify({
+                action: 'returnPersist',
                 object_id: arenaObj.object_id,
                 data: records,
             }));
