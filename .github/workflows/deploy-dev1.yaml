@@ -26,5 +26,4 @@ jobs:
              git reset --hard HEAD
              git pull
              cd ..
-             ./staging.sh down
-             ./staging.sh up --force-recreate --build -d 
+             ./staging.sh down && ./staging.sh up --force-recreate --build -d 
