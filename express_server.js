@@ -216,6 +216,7 @@ exports.runExpress = async ({ArenaObject, mqttClient, jwk, loadTemplate}) => {
         }
         ArenaObject.find(query,
             {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0}).
+            sort('attributes.parent').
             then((records) => {
                 res.json(records);
             });
