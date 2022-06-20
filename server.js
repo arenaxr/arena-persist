@@ -42,12 +42,7 @@ let persists = new Set();
 let expirations;
 let expireTimer;
 
-mongoose.connect(config.mongodb.uri, {
-    useNewUrlParser: true,
-    useFindAndModify: false,
-    useCreateIndex: true,
-    useUnifiedTopology: true,
-}).then(async () => {
+mongoose.connect(config.mongodb).then(async () => {
     console.log('Connected to Mongodb');
     persists = new Set((await ArenaObject.find({}, {
         'object_id': 1,
