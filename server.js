@@ -391,7 +391,7 @@ const createArenaObj = async (
         realm: realm,
         namespace: namespace,
         sceneId: sceneId,
-    }).toObject;
+    }).toObject();
     await ArenaObject.findOneAndUpdate({
         namespace: namespace,
         // eslint-disable-next-line camelcase
