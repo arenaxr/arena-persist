@@ -33,16 +33,16 @@ const arenaSchema = new mongoose.Schema({
 }, {
     timestamps: true,
 });
+arenaSchema.index({'attributes.parent': 1}, {sparse: true});
 
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
-mongoose.connection.collections.arenaobjects.createIndex({'attributes.parent': 1}, {sparse: true});
 
 let mqttClient;
 let persists = new Set();
 let expirations;
 let expireTimer;
 
-mongoose.connect(config.mongodb).then(async () => {
+mongoose.connect(config.mongodb.uri).then(async () => {
     console.log('Connected to Mongodb');
     persists = new Set((await ArenaObject.find({}, {
         'object_id': 1,
