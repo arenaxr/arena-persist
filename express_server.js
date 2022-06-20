@@ -73,8 +73,9 @@ exports.runExpress = async ({ArenaObject, mqttClient, jwk, loadTemplate}) => {
             if (!token) {
                 return tokenError(res);
             }
-            req.jwtPayload = jose.jwtVerify(token, jwk, VERIFY_OPTIONS)
-                .then(() => {
+            jose.jwtVerify(token, jwk, VERIFY_OPTIONS)
+                .then((verifiedToken) => {
+                    req.jwtPayload = verifiedToken.payload;
                     next();
                 })
                 .catch(() => tokenError(res));
