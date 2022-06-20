@@ -1,8 +1,15 @@
 const MQTTPattern = require('mqtt-pattern');
-const {JWT} = require('jose');
+const jose = require('jose');
 
 const express = require('express');
 const cookieParser = require('cookie-parser');
+
+// TODO: Does any of this need to be parameterized?
+const VERIFY_OPTIONS = {
+    algorithms: ['RS256'],
+    audience: 'arena',
+    issuer: 'arena-account',
+};
 
 /**
  * Starts express server
@@ -66,12 +73,11 @@ exports.runExpress = async ({ArenaObject, mqttClient, jwk, loadTemplate}) => {
             if (!token) {
                 return tokenError(res);
             }
-            try {
-                req.jwtPayload = JWT.verify(token, jwk);
-                next();
-            } catch (err) {
-                return tokenError(res);
-            }
+            req.jwtPayload = jose.jwtVerify(token, jwk, VERIFY_OPTIONS)
+                .then(() => {
+                    next();
+                })
+                .catch(() => tokenError(res));
         });
         checkJWTSubs = (req, res, next) => {
             const {sceneId, namespace} = req.params;

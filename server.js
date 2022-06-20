@@ -7,19 +7,19 @@ const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
 const {setIntervalAsync} = require('set-interval-async/dynamic');
 const {clearIntervalAsync} = require('set-interval-async');
-const {JWK} = require('jose');
+const jose = require('jose');
 
 const {runExpress} = require('./express_server');
 const {asyncForEach, asyncMapForEach, filterNulls, flatten} = require('./utils');
 
 let jwk;
 if (config.jwt_public_keyfile) {
-    try {
-        jwk = JWK.asKey(fs.readFileSync(config.jwt_public_keyfile));
-    } catch (err) {
-        console.error(`Error loading public key: ${config.jwt_public_keyfile}`);
-        process.exit();
-    }
+    // TODO: Does alg need to be parameterized?
+    jwk = jose.importSPKI(fs.readFileSync(config.jwt_public_keyfile, 'utf8'), 'RS256')
+        .catch(() => {
+            console.error(`Error loading public key: ${config.jwt_public_keyfile}`);
+            process.exit();
+        });
 }
 
 const arenaSchema = new mongoose.Schema({
@@ -369,6 +369,7 @@ const createArenaObj = async (
     const topic = `realm/s/${namespace}/${sceneId}`;
     let expireAt;
     const msg = {
+        // eslint-disable-next-line camelcase
         object_id: object_id,
         action: 'create',
         type: type,
@@ -382,6 +383,7 @@ const createArenaObj = async (
         expireAt = new Date(new Date().getTime() + (ttl * 1000));
     }
     const arenaObj = new ArenaObject({
+        // eslint-disable-next-line camelcase
         object_id: object_id,
         type: type,
         attributes: attributes,
@@ -392,6 +394,7 @@ const createArenaObj = async (
     }).toObject;
     await ArenaObject.findOneAndUpdate({
         namespace: namespace,
+        // eslint-disable-next-line camelcase
         object_id: object_id,
         sceneId: sceneId,
     }, arenaObj, {
