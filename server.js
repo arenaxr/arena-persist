@@ -15,7 +15,10 @@ const {asyncForEach, asyncMapForEach, filterNulls, flatten} = require('./utils')
 let jwk;
 if (config.jwt_public_keyfile) {
     // TODO: Does alg need to be parameterized?
-    jwk = jose.importSPKI(fs.readFileSync(config.jwt_public_keyfile, 'utf8'), 'RS256')
+    jose.importSPKI(fs.readFileSync(config.jwt_public_keyfile, 'utf8'), 'RS256')
+        .then((key) => {
+            jwk = key;
+        })
         .catch(() => {
             console.error(`Error loading public key: ${config.jwt_public_keyfile}`);
             process.exit();
