@@ -7,8 +7,8 @@ const cookieParser = require('cookie-parser');
 // TODO: Does any of this need to be parameterized?
 const VERIFY_OPTIONS = {
     algorithms: ['RS256'],
-    audience: 'arena',
-    issuer: 'arena-account',
+    // audience: 'arena',
+    // issuer: 'arena-account',
 };
 
 /**
