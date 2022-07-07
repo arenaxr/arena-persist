@@ -172,14 +172,18 @@ async function arenaMsgHandler(topic, message) {
     switch (msgJSON.action) {
     case 'create':
         if (msgJSON.persist === true) {
-            await ArenaObject.findOneAndUpdate({
-                object_id: arenaObj.object_id,
-                namespace: arenaObj.namespace,
-                sceneId: arenaObj.sceneId,
-            }, insertObj, {
-                upsert: true,
-                runValidators: true,
-            });
+            try {
+                await ArenaObject.findOneAndUpdate({
+                    object_id: arenaObj.object_id,
+                    namespace: arenaObj.namespace,
+                    sceneId: arenaObj.sceneId,
+                }, insertObj, {
+                    upsert: true,
+                    runValidators: true,
+                });
+            } catch (err) {
+                console.log('Error creating object: ', arenaObj.object_id, err);
+            }
             if (arenaObj.expireAt) {
                 expirations.set(
                     `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
@@ -194,39 +198,33 @@ async function arenaMsgHandler(topic, message) {
             if (persists.has(
                 `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
                 if (msgJSON.overwrite) {
-                    await ArenaObject.findOneAndReplace(
-                        {
-                            object_id: arenaObj.object_id,
-                            namespace: arenaObj.namespace,
-                            sceneId: arenaObj.sceneId,
-                        },
-                        insertObj,
-                        {},
-                        (err) => {
-                            if (err) {
-                                console.log('Does not exist:',
-                                    arenaObj.object_id);
-                            }
-                        },
-                    );
+                    try {
+                        await ArenaObject.findOneAndReplace(
+                            {
+                                object_id: arenaObj.object_id,
+                                namespace: arenaObj.namespace,
+                                sceneId: arenaObj.sceneId,
+                            },
+                            insertObj,
+                        );
+                    } catch (err) {
+                        console.log('Does not exist to update:', arenaObj.object_id);
+                    }
                 } else {
                     const [sets, unSets] = filterNulls(
                         flatten({attributes: insertObj.attributes}));
-                    await ArenaObject.findOneAndUpdate(
-                        {
-                            object_id: arenaObj.object_id,
-                            namespace: arenaObj.namespace,
-                            sceneId: arenaObj.sceneId,
-                        },
-                        {$set: sets, $unset: unSets},
-                        {},
-                        (err) => {
-                            if (err) {
-                                console.log('Does not exist:',
-                                    arenaObj.object_id);
-                            }
-                        },
-                    );
+                    try {
+                        await ArenaObject.findOneAndUpdate(
+                            {
+                                object_id: arenaObj.object_id,
+                                namespace: arenaObj.namespace,
+                                sceneId: arenaObj.sceneId,
+                            },
+                            {$set: sets, $unset: unSets},
+                        );
+                    } catch (err) {
+                        console.log('Does not exist:', arenaObj.object_id);
+                    }
                 }
                 if (arenaObj.expireAt) {
                     expirations.set(
@@ -240,21 +238,20 @@ async function arenaMsgHandler(topic, message) {
     case 'delete':
         if (persists.has(
             `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
-            await ArenaObject.deleteOne({
-                object_id: arenaObj.object_id,
-                namespace: arenaObj.namespace,
-                sceneId: arenaObj.sceneId,
-            }, (err) => {
-                if (err) {
-                    console.log('Does not exist or already deleted:',
-                        arenaObj.object_id);
-                }
-            });
-            await ArenaObject.deleteMany({
-                'attributes.parent': arenaObj.object_id,
-                'namespace': arenaObj.namespace,
-                'sceneId': arenaObj.sceneId,
-            });
+            try {
+                await ArenaObject.deleteOne({
+                    object_id: arenaObj.object_id,
+                    namespace: arenaObj.namespace,
+                    sceneId: arenaObj.sceneId,
+                });
+                await ArenaObject.deleteMany({
+                    'attributes.parent': arenaObj.object_id,
+                    'namespace': arenaObj.namespace,
+                    'sceneId': arenaObj.sceneId,
+                });
+            } catch (err) {
+                console.log('Does not exist or already deleted:', arenaObj.object_id);
+            }
             if (expirations.has(
                 `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
                 expirations.delete(
@@ -262,11 +259,15 @@ async function arenaMsgHandler(topic, message) {
             }
             if (arenaObj.object_id.split('::').length - 1 === 1) { // Template container ID, 1 pair of '::'
                 const r = RegExp('^' + arenaObj.object_id + '::');
-                await ArenaObject.deleteMany({
-                    'attributes.parent': r,
-                    'namespace': arenaObj.namespace,
-                    'sceneId': arenaObj.sceneId,
-                });
+                try {
+                    await ArenaObject.deleteMany({
+                        'attributes.parent': r,
+                        'namespace': arenaObj.namespace,
+                        'sceneId': arenaObj.sceneId,
+                    });
+                } catch (err) {
+                    console.log('Error deleting template container for:', arenaObj.object_id);
+                }
             }
             persists.delete(
                 `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
@@ -390,14 +391,18 @@ const createArenaObj = async (
         namespace: namespace,
         sceneId: sceneId,
     }).toObject();
-    await ArenaObject.findOneAndUpdate({
-        namespace: namespace,
-        // eslint-disable-next-line camelcase
-        object_id: object_id,
-        sceneId: sceneId,
-    }, arenaObj, {
-        upsert: true,
-    });
+    try {
+        await ArenaObject.findOneAndUpdate({
+            namespace: namespace,
+            // eslint-disable-next-line camelcase
+            object_id: object_id,
+            sceneId: sceneId,
+        }, arenaObj, {
+            upsert: true,
+        });
+    } catch (err) {
+        console.log('Error creating arena object', object_id, err);
+    }
     await mqttClient.publish(topic, JSON.stringify(msg));
 };
 
