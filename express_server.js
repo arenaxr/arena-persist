@@ -76,6 +76,9 @@ exports.runExpress = async ({
     if (jwk) {
         app.use(cookieParser());
         app.use(async (req, res, next) => {
+            if (req.originalUrl === '/persist/health') {
+                return next();
+            }
             const token = req.cookies.mqtt_token;
             if (!token) {
                 return tokenError(res);
@@ -259,21 +262,6 @@ exports.runExpress = async ({
                 res.json(msgs);
             });
         });
-
-    app.get('/persist/health', (req, res) => {
-        if (mongooseConnection?.readyState === 1 && mqttClient?.connected) {
-            res.json({result: 'success'});
-        } else {
-            res.status(500);
-            res.json({
-                result: 'failure',
-                database: (mongooseConnection?.readyState === 1) ?
-                    'connected' :
-                    'disconnected',
-                mqtt: mqttClient?.connected ? 'connected' : 'disconnected',
-            });
-        }
-    });
 
     app.listen(8884);
 };
