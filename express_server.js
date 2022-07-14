@@ -16,9 +16,16 @@ const VERIFY_OPTIONS = {
  * @param {object} ArenaObject - mongoose schema
  * @param {object} mqttClient - async-mqtt client
  * @param {object} jwk - JWK from config
+ * @param {object} mongooseConnection - mongoose.connection
  * @param {function} loadTemplate - function to clone templates
  */
-exports.runExpress = async ({ArenaObject, mqttClient, jwk, loadTemplate}) => {
+exports.runExpress = async ({
+    ArenaObject,
+    mqttClient,
+    jwk,
+    mongooseConnection,
+    loadTemplate,
+}) => {
     const app = express();
 
     // Set and remove headers
@@ -252,6 +259,21 @@ exports.runExpress = async ({ArenaObject, mqttClient, jwk, loadTemplate}) => {
                 res.json(msgs);
             });
         });
+
+    app.get('/health', (req, res) => {
+        if (mongooseConnection?.readyState === 'connected' && mqttClient?.connected) {
+            res.json({result: 'success'});
+        } else {
+            res.status(500);
+            res.json({
+                result: 'failure',
+                database: (mongooseConnection?.readyState === 'connected') ?
+                    'connected' :
+                    'disconnected',
+                mqtt: mqttClient?.connected ? 'connected' : 'disconnected',
+            });
+        }
+    });
 
     app.listen(8884);
 };
