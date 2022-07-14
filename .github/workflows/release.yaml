@@ -3,7 +3,8 @@ name: Release to Docker Hub
 on:
   release:
     types:
-      - created
+      - published
+  workflow_dispatch:
       
 jobs:
   release:
@@ -28,6 +29,9 @@ jobs:
         id:   docker_build
         uses: docker/build-push-action@v2
         with:
+          build-args: |
+            chash=${{ github.sha }}
+            version=${{ steps.get_release.outputs.tag_name }}
           push: true
           tags:  ${{ secrets.DOCKER_HUB_USERNAME }}/${{ github.event.repository.name }}, ${{ secrets.DOCKER_HUB_USERNAME }}/${{ github.event.repository.name }}:${{ steps.get_release.outputs.tag_name }} 
 
