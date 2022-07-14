@@ -260,7 +260,7 @@ exports.runExpress = async ({
             });
         });
 
-    app.get('/health', (req, res) => {
+    app.get('/persist/health', (req, res) => {
         if (mongooseConnection?.readyState === 'connected' && mqttClient?.connected) {
             res.json({result: 'success'});
         } else {
