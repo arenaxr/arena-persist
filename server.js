@@ -5,8 +5,7 @@ const config = require('./config.json');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
-const {setIntervalAsync} = require('set-interval-async/dynamic');
-const {clearIntervalAsync} = require('set-interval-async');
+const {clearIntervalAsync, setIntervalAsync} = require('set-interval-async/dynamic');
 const jose = require('jose');
 
 const {runExpress} = require('./express_server');
