@@ -27,13 +27,14 @@ if (config.jwt_public_keyfile) {
 const arenaSchema = new mongoose.Schema({
     object_id: {type: String, required: true, index: true},
     type: {type: String, required: true, index: true},
-    attributes: Object,
+    attributes: {type: Object, required: true, default: {}},
     expireAt: {type: Date, expires: 0},
     realm: {type: String, required: true, index: true},
     namespace: {type: String, required: true, index: true, default: 'public'},
     sceneId: {type: String, required: true, index: true},
 }, {
     timestamps: true,
+    minimize: false, // Try to enforce attributes being valid object for $set and $unset
 });
 arenaSchema.index({'attributes.parent': 1}, {sparse: true});
 
