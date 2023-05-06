@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/arenaxr/arena-persist/compare/v1.0.2...v1.0.3) (2023-05-06)
+
+
+### Bug Fixes
+
+* force object for attributes ([5c3b328](https://github.com/arenaxr/arena-persist/commit/5c3b328b2705e2f41f7da33f31d165eff32664a2))
+
 ## [1.0.2](https://github.com/conix-center/arena-persist/compare/v1.0.1...v1.0.2) (2022-07-14)
 
 
