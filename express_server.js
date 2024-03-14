@@ -129,7 +129,7 @@ exports.runExpress = async ({
                     '_id.sceneId': 1,
                 },
             },
-        ]).exec((err, scenes) => {
+        ]).exec().then((err, scenes) => {
             return res.json(
                 scenes.map((s) => s._id.namespace + '/' + s._id.sceneId));
         });
@@ -159,7 +159,7 @@ exports.runExpress = async ({
                     '_id.sceneId': 1,
                 },
             },
-        ]).exec((err, scenes) => {
+        ]).exec().then((err, scenes) => {
             return res.json(scenes.map((s) => `${namespace}/${s._id.sceneId}`));
         });
     });
