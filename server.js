@@ -61,7 +61,7 @@ mongoose.connect(config.mongodb.uri).then(async () => {
         mongooseConnection: mongoose.connection,
         loadTemplate,
     });
-}, (err) => {
+}).catch((err) => {
     console.log('Mongodb Connection Error: ', err);
 });
 
