@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.4](https://github.com/arenaxr/arena-persist/compare/v1.0.3...v1.0.4) (2024-04-01)
+
+
+### Bug Fixes
+
+* catch promise, not callback param ([a78a689](https://github.com/arenaxr/arena-persist/commit/a78a68925fe33841c422cd30b6afeecdaf2fbc47))
+* use correct sig for exec promise ret ([ece873b](https://github.com/arenaxr/arena-persist/commit/ece873b0673e8b94a3175c3d3727cabce3184d49))
+
 ## [1.0.3](https://github.com/arenaxr/arena-persist/compare/v1.0.2...v1.0.3) (2023-05-06)
 
 
