@@ -10,6 +10,7 @@ const jose = require('jose');
 
 const {runExpress} = require('./express_server');
 const {asyncForEach, asyncMapForEach, filterNulls, flatten} = require('./utils');
+import TOPICS from './topics';
 
 let jwk;
 if (config.jwt_public_keyfile) {
@@ -83,7 +84,6 @@ async function runMQTT() {
         connectOpts.password = config.jwt_service_token;
     }
     mqttClient = await mqtt.connectAsync(config.mqtt.uri, connectOpts);
-    const SCENE_TOPIC_BASE = config.mqtt.topic_realm + '/s/#';
     console.log('Connected to MQTT');
     mqttClient.on('offline', async () => {
         if (expireTimer) {
@@ -119,7 +119,10 @@ async function runMQTT() {
         console.log(err);
     });
     try {
-        await mqttClient.subscribe(SCENE_TOPIC_BASE, {
+        await mqttClient.subscribe(TOPICS.SUBSCRIBE.SCENE_PUBLIC.formatStr({
+            nameSpace: '+',
+            sceneName: '+',
+        }), {
             qos: 1,
         }).then(async () => {
             expirations = new Map();
@@ -371,7 +374,6 @@ async function handleLoadTemplate(arenaObj) {
 const createArenaObj = async (
     // eslint-disable-next-line camelcase
     object_id, type, realm, namespace, sceneId, attributes, persist, ttl) => {
-    const topic = `realm/s/${namespace}/${sceneId}`;
     let expireAt;
     const msg = {
         // eslint-disable-next-line camelcase
@@ -409,7 +411,12 @@ const createArenaObj = async (
     } catch (err) {
         console.log('Error creating arena object', object_id, err);
     }
-    await mqttClient.publish(topic, JSON.stringify(msg));
+    await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+        nameSpace: namespace,
+        sceneName: sceneId,
+        // eslint-disable-next-line camelcase
+        objectId: object_id,
+    }), JSON.stringify(msg));
 };
 
 /**
@@ -487,12 +494,16 @@ const publishExpires = async () => {
     const now = new Date();
     await asyncMapForEach(expirations, async (obj, key) => {
         if (obj.expireAt < now) {
-            const topic = `${obj.realm}/s/${obj.namespace}/${obj.sceneId}`;
             const msg = {
                 object_id: obj.object_id,
                 action: 'delete',
             };
-            await mqttClient.publish(topic, JSON.stringify(msg));
+            await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+                nameSpace: obj.namespace,
+                sceneName: obj.sceneId,
+                // eslint-disable-next-line camelcase
+                objectId: obj.object_id,
+            }), JSON.stringify(msg));
             expirations.delete(key);
             persists.delete(key);
             await ArenaObject.deleteMany({
