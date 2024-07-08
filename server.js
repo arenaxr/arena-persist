@@ -153,12 +153,22 @@ async function arenaMsgHandler(topic, message) {
     - 1: type [s, n, r, topology, flows]
     - 2: namespace
     - 3: sceneId
+    - 4: sceneMsg type
+    - 5: object_id
+    - 6: toUid (not relevant for persist)
     */
     let msgJSON;
     let arenaObj;
     const now = new Date();
     try {
         msgJSON = JSON.parse(message.toString());
+
+        // Verify topicObjId is same as json payload id
+        const topicObjId = topicSplit[5];
+        if (msgJSON.object_id !== topicObjId) {
+            return;
+        }
+
         arenaObj = new ArenaObject({
             object_id: msgJSON.object_id,
             attributes: msgJSON.data,
