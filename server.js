@@ -164,7 +164,7 @@ async function arenaMsgHandler(topic, message) {
         msgJSON = JSON.parse(message.toString());
 
         // Verify topicObjId is same as json payload id
-        const topicObjId = topicSplit[5];
+        const topicObjId = topicSplit[TOPICS.TOKENS.UUID];
         if (msgJSON.object_id !== topicObjId) {
             return;
         }
@@ -174,9 +174,9 @@ async function arenaMsgHandler(topic, message) {
             attributes: msgJSON.data,
             expireAt: undefined,
             type: msgJSON.type,
-            realm: topicSplit[0],
-            namespace: topicSplit[2],
-            sceneId: topicSplit[3],
+            realm: topicSplit[TOPICS.TOKENS.REALM],
+            namespace: topicSplit[TOPICS.TOKENS.NAMESPACE],
+            sceneId: topicSplit[TOPICS.TOKENS.SCENENAME],
         });
         if (msgJSON.ttl) {
             if (msgJSON.persist && msgJSON.persist !== false) {

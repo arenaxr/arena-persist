@@ -22,6 +22,15 @@ const REALM = config.mqtt.topic_realm;
 /* eslint-disable key-spacing */
 // prettier-ignore
 exports.TOPICS = Object.freeze({
+    TOKENS: {
+        REALM: 0,
+        TYPE: 1,
+        NAMESPACE: 2,
+        SCENENAME: 3,
+        SCENE_MSGTYPE: 4,
+        UUID: 5,
+        TO_UID: 6,
+    },
     SUBSCRIBE: {
         NETWORK:               '$NETWORK',
         CHAT_PUBLIC:           `${REALM}/c/{nameSpace}/o/#`,
