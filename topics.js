@@ -6,7 +6,7 @@
  * @date 2024
  */
 
-import config from 'config.json';
+const config = require('./config.json');
 
 /**
  * ARENA pubsub topic variables
@@ -21,7 +21,7 @@ const REALM = config.mqtt.topic_realm;
 
 /* eslint-disable key-spacing */
 // prettier-ignore
-const TOPICS = Object.freeze({
+exports.TOPICS = Object.freeze({
     SUBSCRIBE: {
         NETWORK:               '$NETWORK',
         CHAT_PUBLIC:           `${REALM}/c/{nameSpace}/o/#`,
@@ -56,4 +56,4 @@ const TOPICS = Object.freeze({
     },
 });
 
-export default TOPICS;
+//export default TOPICS;

@@ -10,7 +10,7 @@ const jose = require('jose');
 
 const {runExpress} = require('./express_server');
 const {asyncForEach, asyncMapForEach, filterNulls, flatten} = require('./utils');
-import TOPICS from './topics';
+const {TOPICS} = require('./topics');
 
 let jwk;
 if (config.jwt_public_keyfile) {
