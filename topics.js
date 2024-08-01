@@ -31,6 +31,16 @@ exports.TOPICS = Object.freeze({
         UUID: 5,
         TO_UID: 6,
     },
+    SCENE_MSGTYPES: {
+        PRESENCE: 'x',
+        CHAT: 'c',
+        USER: 'u',
+        OBJECTS: 'o',
+        RENDER: 'r',
+        ENV: 'e',
+        PROGRAM: 'p',
+        DEBUG: 'd',
+    },
     SUBSCRIBE: {
         NETWORK:               '$NETWORK',
         DEVICE:                `${REALM}/d/{userName}/#`, // All client placeholder
@@ -47,6 +57,7 @@ exports.TOPICS = Object.freeze({
         PROC_CTL:              `${REALM}/proc/control`,
         PROC_DBG:              `${REALM}/proc/debug/{uuid}`,
         SCENE_PRESENCE:        `${REALM}/s/{nameSpace}/{sceneName}/x/{idTag}`,
+        SCENE_PRESENCE_PRIVATE:`${REALM}/s/{nameSpace}/{sceneName}/x/{idTag}/{toUid}`,
         SCENE_CHAT:            `${REALM}/s/{nameSpace}/{sceneName}/c/{idTag}`,
         SCENE_CHAT_PRIVATE:    `${REALM}/s/{nameSpace}/{sceneName}/c/{idTag}/{toUid}`,
         SCENE_USER:            `${REALM}/s/{nameSpace}/{sceneName}/u/{userObj}`,
