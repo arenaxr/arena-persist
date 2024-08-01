@@ -33,6 +33,8 @@ const arenaSchema = new mongoose.Schema({
     realm: {type: String, required: true, index: true},
     namespace: {type: String, required: true, index: true, default: 'public'},
     sceneId: {type: String, required: true, index: true},
+    private: {type: Boolean},
+    program_id: {type: String},
 }, {
     timestamps: true,
     minimize: false, // Try to enforce attributes being valid object for $set and $unset
