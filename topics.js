@@ -43,7 +43,7 @@ exports.TOPICS = Object.freeze({
     },
     SUBSCRIBE: {
         NETWORK:               '$NETWORK',
-        DEVICE:                `${REALM}/d/{userName}/#`, // All client placeholder
+        DEVICE:                `${REALM}/d/{deviceName}/#`, // All client placeholder
         PROC_REG:              `${REALM}/proc/reg`,
         PROC_CTL:              `${REALM}/proc/control/{uuid}/#`,
         PROC_DBG:              `${REALM}/proc/debug/{uuid}`,
@@ -52,7 +52,7 @@ exports.TOPICS = Object.freeze({
     },
     PUBLISH: {
         NETWORK_LATENCY:       '$NETWORK/latency',
-        DEVICE:                `${REALM}/d/{nameSpace}/{sceneName}/{idTag}`,
+        DEVICE:                `${REALM}/d/{deviceName}/{idTag}`,
         PROC_REG:              `${REALM}/proc/reg`,
         PROC_CTL:              `${REALM}/proc/control`,
         PROC_DBG:              `${REALM}/proc/debug/{uuid}`,
