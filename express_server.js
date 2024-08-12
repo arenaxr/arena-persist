@@ -1,3 +1,4 @@
+const config = require('./config.json');
 const MQTTPattern = require('mqtt-pattern');
 const jose = require('jose');
 
@@ -92,7 +93,7 @@ exports.runExpress = async ({
         });
         checkJWTSubs = (req, res, next) => {
             const {sceneId, namespace} = req.params;
-            const topic = `realm/s/${namespace}/${sceneId}`;
+            const topic = `${config.mqtt.topic_realm}/s/${namespace}/${sceneId}/o/+`;
             if (!matchJWT(topic, req.jwtPayload.subs)) {
                 return tokenSubError(res);
             }
@@ -100,7 +101,7 @@ exports.runExpress = async ({
         };
         checkJWTPubs = (req, res, next) => {
             const {sceneId, namespace} = req.params;
-            const topic = `realm/s/${namespace}/${sceneId}`;
+            const topic = `${config.mqtt.topic_realm}/s/${namespace}/${sceneId}/o/+`;
             if (!matchJWT(topic, req.jwtPayload.publ)) {
                 return tokenPubError(res);
             }
@@ -111,7 +112,7 @@ exports.runExpress = async ({
     app.use(express.json());
 
     app.get('/persist/!allscenes', (req, res) => {
-        if (jwk && !req.jwtPayload.subs.includes('realm/s/#')) { // Must have sub-all rights
+        if (jwk && !matchJWT(`${config.mqtt.topic_realm}/s/+/+/o/+`, req.jwtPayload.subs)) { // Must have sub-all rights
             return tokenSubError(res);
         }
         ArenaObject.aggregate([
@@ -137,7 +138,7 @@ exports.runExpress = async ({
 
     app.get('/persist/:namespace/!allscenes', (req, res) => {
         const {namespace} = req.params;
-        if (jwk && !matchJWT(`realm/s/${namespace}/#`, req.jwtPayload.subs)) { // Must have sub-all public rights
+        if (jwk && !matchJWT(`${config.mqtt.topic_realm}/s/${namespace}/+/o/+`, req.jwtPayload.subs)) { // Must have sub-all public rights
             return tokenSubError(res);
         }
         ArenaObject.aggregate([
@@ -181,7 +182,7 @@ exports.runExpress = async ({
                     res.status(400);
                     return res.json('No namespace or sceneId specified');
                 }
-                if (!matchJWT(`realm/s/${sourceNamespace}/${sourceSceneId}`,
+                if (!matchJWT(`realm/s/${sourceNamespace}/${sourceSceneId}/o`,
                     req.jwtPayload.subs)) {
                     return tokenSubError(res);
                 }
