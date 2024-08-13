@@ -1,10 +1,9 @@
-const config = require('./config.json');
 const MQTTPattern = require('mqtt-pattern');
 const jose = require('jose');
 
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const {TOPICS} = require('topics');
+const {TOPICS} = require('./topics');
 
 // TODO: Does any of this need to be parameterized?
 const VERIFY_OPTIONS = {
