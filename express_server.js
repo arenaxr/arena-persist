@@ -4,6 +4,7 @@ const jose = require('jose');
 
 const express = require('express');
 const cookieParser = require('cookie-parser');
+const {TOPICS} = require('topics');
 
 // TODO: Does any of this need to be parameterized?
 const VERIFY_OPTIONS = {
@@ -93,7 +94,12 @@ exports.runExpress = async ({
         });
         checkJWTSubs = (req, res, next) => {
             const {sceneId, namespace} = req.params;
-            const topic = `${config.mqtt.topic_realm}/s/${namespace}/${sceneId}/o/+`;
+            // This specific PUBLISH topic matches for objects
+            const topic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+                nameSpace: namespace,
+                sceneName: sceneId,
+                objectId: '+',
+            });
             if (!matchJWT(topic, req.jwtPayload.subs)) {
                 return tokenSubError(res);
             }
@@ -101,7 +107,11 @@ exports.runExpress = async ({
         };
         checkJWTPubs = (req, res, next) => {
             const {sceneId, namespace} = req.params;
-            const topic = `${config.mqtt.topic_realm}/s/${namespace}/${sceneId}/o/+`;
+            const topic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+                nameSpace: namespace,
+                sceneName: sceneId,
+                objectId: '+',
+            });
             if (!matchJWT(topic, req.jwtPayload.publ)) {
                 return tokenPubError(res);
             }
@@ -112,7 +122,12 @@ exports.runExpress = async ({
     app.use(express.json());
 
     app.get('/persist/!allscenes', (req, res) => {
-        if (jwk && !matchJWT(`${config.mqtt.topic_realm}/s/+/+/o/+`, req.jwtPayload.subs)) { // Must have sub-all rights
+        const globalTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+            nameSpace: '+',
+            sceneName: '+',
+            objectId: '+',
+        });
+        if (jwk && !matchJWT(globalTopic, req.jwtPayload.subs)) { // Must have sub-all rights
             return tokenSubError(res);
         }
         ArenaObject.aggregate([
@@ -138,7 +153,12 @@ exports.runExpress = async ({
 
     app.get('/persist/:namespace/!allscenes', (req, res) => {
         const {namespace} = req.params;
-        if (jwk && !matchJWT(`${config.mqtt.topic_realm}/s/${namespace}/+/o/+`, req.jwtPayload.subs)) { // Must have sub-all public rights
+        const namespaceTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+            nameSpace: namespace,
+            sceneName: '+',
+            objectId: '+', // arbitrary object
+        });
+        if (jwk && !matchJWT(namespaceTopic, req.jwtPayload.subs)) { // Must have sub-all public rights
             return tokenSubError(res);
         }
         ArenaObject.aggregate([
@@ -182,8 +202,12 @@ exports.runExpress = async ({
                     res.status(400);
                     return res.json('No namespace or sceneId specified');
                 }
-                if (!matchJWT(`realm/s/${sourceNamespace}/${sourceSceneId}/o`,
-                    req.jwtPayload.subs)) {
+                const srcTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+                    nameSpace: sourceNamespace,
+                    sceneName: sourceSceneId,
+                    objectId: '+',
+                });
+                if (!matchJWT(srcTopic, req.jwtPayload.subs)) {
                     return tokenSubError(res);
                 }
                 const sourceObjectCount = await ArenaObject.countDocuments(
