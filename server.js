@@ -121,9 +121,10 @@ async function runMQTT() {
         console.log(err);
     });
     try {
-        await mqttClient.subscribe(TOPICS.SUBSCRIBE.SCENE_PUBLIC.formatStr({
+        await mqttClient.subscribe(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
             nameSpace: '+',
             sceneName: '+',
+            objectId: '+',
         }), {
             qos: 1,
         }).then(async () => {
