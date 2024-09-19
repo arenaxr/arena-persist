@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.5](https://github.com/arenaxr/arena-persist/compare/v1.0.4...v1.0.5) (2024-09-19)
+
+
+### Bug Fixes
+
+* make release please trigger other workflows (using a PAT) ([c27263c](https://github.com/arenaxr/arena-persist/commit/c27263c572bdb6ad01cd059d7660e3ee189313f1))
+
 ## [1.0.4](https://github.com/arenaxr/arena-persist/compare/v1.0.3...v1.0.4) (2024-04-01)
 
 
