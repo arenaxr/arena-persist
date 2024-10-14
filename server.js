@@ -10,6 +10,7 @@ const jose = require('jose');
 
 const {runExpress} = require('./express_server');
 const {asyncForEach, asyncMapForEach, filterNulls, flatten} = require('./utils');
+const {TOPICS} = require('./topics');
 
 let jwk;
 if (config.jwt_public_keyfile) {
@@ -32,6 +33,8 @@ const arenaSchema = new mongoose.Schema({
     realm: {type: String, required: true, index: true},
     namespace: {type: String, required: true, index: true, default: 'public'},
     sceneId: {type: String, required: true, index: true},
+    private: {type: Boolean},
+    program_id: {type: String},
 }, {
     timestamps: true,
     minimize: false, // Try to enforce attributes being valid object for $set and $unset
@@ -83,7 +86,6 @@ async function runMQTT() {
         connectOpts.password = config.jwt_service_token;
     }
     mqttClient = await mqtt.connectAsync(config.mqtt.uri, connectOpts);
-    const SCENE_TOPIC_BASE = config.mqtt.topic_realm + '/s/#';
     console.log('Connected to MQTT');
     mqttClient.on('offline', async () => {
         if (expireTimer) {
@@ -119,7 +121,11 @@ async function runMQTT() {
         console.log(err);
     });
     try {
-        await mqttClient.subscribe(SCENE_TOPIC_BASE, {
+        await mqttClient.subscribe(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+            nameSpace: '+',
+            sceneName: '+',
+            objectId: '+',
+        }), {
             qos: 1,
         }).then(async () => {
             expirations = new Map();
@@ -150,20 +156,30 @@ async function arenaMsgHandler(topic, message) {
     - 1: type [s, n, r, topology, flows]
     - 2: namespace
     - 3: sceneId
+    - 4: sceneMsg type
+    - 5: object_id
+    - 6: toUid (not relevant for persist)
     */
     let msgJSON;
     let arenaObj;
     const now = new Date();
     try {
         msgJSON = JSON.parse(message.toString());
+
+        // Verify topicObjId is same as json payload id
+        const topicObjId = topicSplit[TOPICS.TOKENS.UUID];
+        if (msgJSON.object_id !== topicObjId) {
+            return;
+        }
+
         arenaObj = new ArenaObject({
             object_id: msgJSON.object_id,
             attributes: msgJSON.data,
             expireAt: undefined,
             type: msgJSON.type,
-            realm: topicSplit[0],
-            namespace: topicSplit[2],
-            sceneId: topicSplit[3],
+            realm: topicSplit[TOPICS.TOKENS.REALM],
+            namespace: topicSplit[TOPICS.TOKENS.NAMESPACE],
+            sceneId: topicSplit[TOPICS.TOKENS.SCENENAME],
         });
         if (msgJSON.ttl) {
             if (msgJSON.persist && msgJSON.persist !== false) {
@@ -371,7 +387,6 @@ async function handleLoadTemplate(arenaObj) {
 const createArenaObj = async (
     // eslint-disable-next-line camelcase
     object_id, type, realm, namespace, sceneId, attributes, persist, ttl) => {
-    const topic = `realm/s/${namespace}/${sceneId}`;
     let expireAt;
     const msg = {
         // eslint-disable-next-line camelcase
@@ -409,7 +424,12 @@ const createArenaObj = async (
     } catch (err) {
         console.log('Error creating arena object', object_id, err);
     }
-    await mqttClient.publish(topic, JSON.stringify(msg));
+    await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+        nameSpace: namespace,
+        sceneName: sceneId,
+        // eslint-disable-next-line camelcase
+        objectId: object_id,
+    }), JSON.stringify(msg));
 };
 
 /**
@@ -487,12 +507,16 @@ const publishExpires = async () => {
     const now = new Date();
     await asyncMapForEach(expirations, async (obj, key) => {
         if (obj.expireAt < now) {
-            const topic = `${obj.realm}/s/${obj.namespace}/${obj.sceneId}`;
             const msg = {
                 object_id: obj.object_id,
                 action: 'delete',
             };
-            await mqttClient.publish(topic, JSON.stringify(msg));
+            await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+                nameSpace: obj.namespace,
+                sceneName: obj.sceneId,
+                // eslint-disable-next-line camelcase
+                objectId: obj.object_id,
+            }), JSON.stringify(msg));
             expirations.delete(key);
             persists.delete(key);
             await ArenaObject.deleteMany({
