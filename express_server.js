@@ -97,6 +97,7 @@ exports.runExpress = async ({
             const topic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
                 nameSpace: namespace,
                 sceneName: sceneId,
+                userClient: '+',
                 objectId: '+',
             });
             if (!matchJWT(topic, req.jwtPayload.subs)) {
@@ -109,6 +110,7 @@ exports.runExpress = async ({
             const topic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
                 nameSpace: namespace,
                 sceneName: sceneId,
+                userClient: '+', // TODO: review with ivan, might need to be # here
                 objectId: '+',
             });
             if (!matchJWT(topic, req.jwtPayload.publ)) {
@@ -124,6 +126,7 @@ exports.runExpress = async ({
         const globalTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
             nameSpace: '+',
             sceneName: '+',
+            userClient: '+',
             objectId: '+',
         });
         if (jwk && !matchJWT(globalTopic, req.jwtPayload.subs)) { // Must have sub-all rights
@@ -155,6 +158,7 @@ exports.runExpress = async ({
         const namespaceTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
             nameSpace: namespace,
             sceneName: '+',
+            userClient: '+',
             objectId: '+', // arbitrary object
         });
         if (jwk && !matchJWT(namespaceTopic, req.jwtPayload.subs)) { // Must have sub-all public rights
@@ -204,6 +208,7 @@ exports.runExpress = async ({
                 const srcTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
                     nameSpace: sourceNamespace,
                     sceneName: sourceSceneId,
+                    userClient: '+',
                     objectId: '+',
                 });
                 if (!matchJWT(srcTopic, req.jwtPayload.subs)) {

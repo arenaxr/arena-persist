@@ -124,6 +124,7 @@ async function runMQTT() {
         await mqttClient.subscribe(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
             nameSpace: '+',
             sceneName: '+',
+            userClient: '+',
             objectId: '+',
         }), {
             qos: 1,
@@ -427,6 +428,7 @@ const createArenaObj = async (
     await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
         nameSpace: namespace,
         sceneName: sceneId,
+        userClient: mqttClient.options.clientId,
         // eslint-disable-next-line camelcase
         objectId: object_id,
     }), JSON.stringify(msg));
@@ -514,6 +516,7 @@ const publishExpires = async () => {
             await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
                 nameSpace: obj.namespace,
                 sceneName: obj.sceneId,
+                userClient: mqttClient.options.clientId,
                 // eslint-disable-next-line camelcase
                 objectId: obj.object_id,
             }), JSON.stringify(msg));
