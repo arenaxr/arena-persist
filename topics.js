@@ -12,9 +12,9 @@ const config = require('./config.json');
  * ARENA pubsub topic variables
  * - nameSpace - namespace of the scene
  * - sceneName - name of the scene
- * - userName - name of the user per arena-auth (e.g. jdoe)
- * - idTag - username prefixed with a uuid (e.g. 1448081341_jdoe)
- * - camName - idTag prefixed with camera_ (e.g. camera_1448081341_jdoe)
+ * - userClient - name of the user client per arena-auth (e.g. jdoe_1448081341_web)
+ * - idTag - username prefixed with a uuid (e.g. jdoe_1448081341)
+ * - userObj - idTag prefixed with camera_ (e.g. camera_jdoe_1448081341)
  */
 
 const REALM = config.mqtt.topic_realm;
@@ -44,7 +44,7 @@ exports.TOPICS = Object.freeze({
     },
     SUBSCRIBE: {
         NETWORK:               '$NETWORK',
-        DEVICE:                `${REALM}/d/{deviceName}/#`, // All client placeholder
+        DEVICE:                `${REALM}/d/{nameSpace}/{deviceName}/#`, // All client placeholder
         RT_RUNTIME:            `${REALM}/g/{nameSpace}/p/{rtUuid}`,
         RT_MODULES:            `${REALM}/s/{nameSpace}/{sceneName}/p/+/+`,
         SCENE_PUBLIC:          `${REALM}/s/{nameSpace}/{sceneName}/+/+/+`,
@@ -54,7 +54,7 @@ exports.TOPICS = Object.freeze({
     },
     PUBLISH: {
         NETWORK_LATENCY:       '$NETWORK/latency',
-        DEVICE:                `${REALM}/d/{deviceName}/{idTag}`,
+        DEVICE:                `${REALM}/d/{nameSpace}/{deviceName}/{idTag}`,
         RT_RUNTIME:            `${REALM}/g/{nameSpace}/p/{rtUuid}`,
         RT_MODULES:            `${REALM}/s/{nameSpace}/{sceneName}/p/{userClient}/{idTag}`,
         PROC_DBG:              `${REALM}/proc/debug/{uuid}`,
