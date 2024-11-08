@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.0.0](https://github.com/arenaxr/arena-persist/compare/v1.0.4...v2.0.0) (2024-11-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* Refactored topic structure for more granular flow and access ([#26](https://github.com/arenaxr/arena-persist/issues/26))
+
+### Features
+
+* Refactored topic structure for more granular flow and access ([#26](https://github.com/arenaxr/arena-persist/issues/26)) ([6f2a5ed](https://github.com/arenaxr/arena-persist/commit/6f2a5edd42b232f32b74a3801a458acfad1cabc5))
+
+
+### Bug Fixes
+
+* make release please trigger other workflows (using a PAT) ([c27263c](https://github.com/arenaxr/arena-persist/commit/c27263c572bdb6ad01cd059d7660e3ee189313f1))
+* **mqtt:** require userClient in topic for all scene messages ([#32](https://github.com/arenaxr/arena-persist/issues/32)) ([4f93e84](https://github.com/arenaxr/arena-persist/commit/4f93e84ee7c96b5e7d02ae04589fe2521967aa18))
+
 ## [1.0.4](https://github.com/arenaxr/arena-persist/compare/v1.0.3...v1.0.4) (2024-04-01)
 
 
