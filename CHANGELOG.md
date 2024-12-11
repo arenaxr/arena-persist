@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/arenaxr/arena-persist/compare/v2.0.0...v2.0.1) (2024-12-11)
+
+
+### Bug Fixes
+
+* clean up persists set w/ scene delete ([af0c488](https://github.com/arenaxr/arena-persist/commit/af0c4881eb379d476d91a76c4b884ce4c3f2825e))
+
 ## [2.0.0](https://github.com/arenaxr/arena-persist/compare/v1.0.4...v2.0.0) (2024-11-07)
 
 
