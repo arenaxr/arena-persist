@@ -19,6 +19,7 @@ const VERIFY_OPTIONS = {
  * @param {object} jwk - JWK from config
  * @param {object} mongooseConnection - mongoose.connection
  * @param {function} loadTemplate - function to clone templates
+ * @param {Set} persists - set of persisted objects
  */
 exports.runExpress = async ({
     ArenaObject,
@@ -26,6 +27,7 @@ exports.runExpress = async ({
     jwk,
     mongooseConnection,
     loadTemplate,
+    persists,
 }) => {
     const app = express();
 
@@ -276,6 +278,11 @@ exports.runExpress = async ({
         ArenaObject.deleteMany(query).then((result) => {
             res.json({result: 'success', deletedCount: result.deletedCount});
         });
+        for (const key of persists) {
+            if (key.startsWith(`${query.namespace}|${query.sceneId}|`)) {
+                persists.delete(key);
+            }
+        }
     });
 
     app.get('/persist/:namespace/:sceneId/:objectId', checkJWTSubs,

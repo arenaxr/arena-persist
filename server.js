@@ -63,6 +63,7 @@ mongoose.connect(config.mongodb.uri).then(async () => {
         jwk,
         mongooseConnection: mongoose.connection,
         loadTemplate,
+        persists,
     });
 }).catch((err) => {
     console.log('Mongodb Connection Error: ', err);
