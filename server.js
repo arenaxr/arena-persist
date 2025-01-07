@@ -47,15 +47,28 @@ let mqttClient;
 let persists = new Set();
 let expirations;
 let expireTimer;
+let persistUpdateTimeout;
 
-mongoose.connect(config.mongodb.uri).then(async () => {
-    console.log('Connected to Mongodb');
+/**
+ * Force refresh of the persists set every hour
+ * @return {Promise<void>}
+ */
+async function updatePersists() {
+    if (persistUpdateTimeout) {
+        clearTimeout(persistUpdateTimeout);
+    }
     persists = new Set((await ArenaObject.find({}, {
         'object_id': 1,
         'namespace': 1,
         'sceneId': 1,
         '_id': 0,
     })).map((o) => `${o.namespace}|${o.sceneId}|${o.object_id}`));
+    persistUpdateTimeout = setTimeout(updatePersists, 60 * 60 * 1000);
+}
+
+mongoose.connect(config.mongodb.uri).then(async () => {
+    console.log('Connected to Mongodb');
+    await updatePersists();
     await runMQTT();
     await runExpress({
         ArenaObject,
