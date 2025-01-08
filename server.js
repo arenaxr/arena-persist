@@ -44,6 +44,7 @@ arenaSchema.index({'attributes.parent': 1}, {sparse: true});
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
 
 let mqttClient;
+let mqttClientOptions;
 let persists = new Set();
 let expirations;
 let expireTimer;
@@ -86,7 +87,7 @@ mongoose.connect(config.mongodb.uri).then(async () => {
  * Initializes MQTT connection and setts event handlers
  */
 async function runMQTT() {
-    const connectOpts = {
+    mqttClientOptions = {
         clientId: 'arena_persist' + config.mqtt.topic_realm + '_' + Math.floor(Math.random() * 100),
         clean: false, // Receive QoS 1+ messages (object delete) always
         qos: 1,
@@ -442,7 +443,7 @@ const createArenaObj = async (
     await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
         nameSpace: namespace,
         sceneName: sceneId,
-        userClient: mqttClient.options.clientId,
+        userClient: mqttClientOptions.clientId,
         // eslint-disable-next-line camelcase
         objectId: object_id,
     }), JSON.stringify(msg));
@@ -530,7 +531,7 @@ const publishExpires = async () => {
             await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
                 nameSpace: obj.namespace,
                 sceneName: obj.sceneId,
-                userClient: mqttClient.options.clientId,
+                userClient: mqttClientOptions.clientId,
                 // eslint-disable-next-line camelcase
                 objectId: obj.object_id,
             }), JSON.stringify(msg));
