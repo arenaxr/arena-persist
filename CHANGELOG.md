@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.0.1](https://github.com/arenaxr/arena-persist/compare/v2.0.0...v2.0.1) (2025-01-08)
+
+
+### Bug Fixes
+
+* broken publishes for expires/create ([9051952](https://github.com/arenaxr/arena-persist/commit/9051952f06f8aa4c73996fc0c13ccf8429b2dc5b))
+* clean up persists set w/ scene delete ([af0c488](https://github.com/arenaxr/arena-persist/commit/af0c4881eb379d476d91a76c4b884ce4c3f2825e))
+* typos ([7109b62](https://github.com/arenaxr/arena-persist/commit/7109b62d11ce38c4028d796d1b3e05501747ba81))
+
 ## [2.0.0](https://github.com/arenaxr/arena-persist/compare/v1.0.4...v2.0.0) (2024-11-07)
 
 
