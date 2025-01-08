@@ -97,10 +97,10 @@ async function runMQTT() {
         },
     };
     if (jwk) {
-        connectOpts.username = config.jwt_service_user;
-        connectOpts.password = config.jwt_service_token;
+        mqttClientOptions.username = config.jwt_service_user;
+        mqttClientOptions.password = config.jwt_service_token;
     }
-    mqttClient = await mqtt.connectAsync(config.mqtt.uri, connectOpts);
+    mqttClient = await mqtt.connectAsync(config.mqtt.uri, mqttClientOptions);
     console.log('Connected to MQTT');
     mqttClient.on('offline', async () => {
         if (expireTimer) {
