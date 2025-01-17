@@ -11,6 +11,10 @@ persisted objects to load upon entering any scene.
 - Install nodejs
 - `npm install`
 
+## Updating Mongodb
+Note that updating major versions of mongodb will require setting the appropriate compatibility version
+per [documentation](https://www.mongodb.com/docs/manual/release-notes/8.0-upgrade-standalone/#prerequisites)
+
 ## Usage
 
 ### Persistence
@@ -24,7 +28,7 @@ persisted objects to load upon entering any scene.
 
 ### TTL
 Adding a `ttl` (float seconds) to the top level MQTT message for any `create` action signals that the object
-will be automatically deleted from peristence after set duration, as well as a correspdoning `delete` action message
+will be automatically deleted from peristence after set duration, as well as a corresponding `delete` action message
 sent over pubsub. `ttl` implies that `persist` is `true`.
 
 ### Templates
