@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/arenaxr/arena-persist/compare/v2.0.1...v2.0.2) (2025-01-17)
+
+
+### Bug Fixes
+
+* desc of asyncForEach ([63bfa49](https://github.com/arenaxr/arena-persist/commit/63bfa49463413c1170a09fd4378e91f2f29c5a90))
+
 ## [2.0.1](https://github.com/arenaxr/arena-persist/compare/v2.0.0...v2.0.1) (2025-01-08)
 
 
