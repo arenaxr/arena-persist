@@ -1,5 +1,5 @@
 /**
- * Performs forEach callback on an array in async manner.
+ * Performs forEach async callback on an array in serial manner.
  * @param {Array} array - Array or array-like object over which to iterate.
  * @param {function} callback - The function to call, wait await, for every element.
  */
