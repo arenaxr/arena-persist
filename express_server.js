@@ -124,6 +124,21 @@ exports.runExpress = async ({
 
     app.use(express.json());
 
+    app.get('/persist/!allnamespaces', (req, res) => {
+        const globalTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+            nameSpace: '+',
+            sceneName: '+',
+            userClient: '+',
+            objectId: '+',
+        });
+        if (jwk && !matchJWT(globalTopic, req.jwtPayload.subs)) { // Must have staff rights
+            return tokenSubError(res);
+        }
+        ArenaObject.distinct('namespace').then((namespaces) => {
+            return res.json(namespaces);
+        });
+    });
+
     app.get('/persist/!allscenes', (req, res) => {
         const globalTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
             nameSpace: '+',
@@ -131,7 +146,7 @@ exports.runExpress = async ({
             userClient: '+',
             objectId: '+',
         });
-        if (jwk && !matchJWT(globalTopic, req.jwtPayload.subs)) { // Must have sub-all rights
+        if (jwk && !matchJWT(globalTopic, req.jwtPayload.subs)) { // Must have staff rights
             return tokenSubError(res);
         }
         ArenaObject.aggregate([
@@ -163,7 +178,7 @@ exports.runExpress = async ({
             userClient: '+',
             objectId: '+', // arbitrary object
         });
-        if (jwk && !matchJWT(namespaceTopic, req.jwtPayload.subs)) { // Must have sub-all public rights
+        if (jwk && !matchJWT(namespaceTopic, req.jwtPayload.subs)) { // Must have namespace rights
             return tokenSubError(res);
         }
         ArenaObject.aggregate([
