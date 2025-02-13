@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/arenaxr/arena-persist/compare/v2.0.2...v2.1.0) (2025-02-13)
+
+
+### Features
+
+* !allnamespaces http endpoint ([1fcfbfb](https://github.com/arenaxr/arena-persist/commit/1fcfbfb547830b28a5aa232b7a35e5d2413389da))
+
 ## [2.0.2](https://github.com/arenaxr/arena-persist/compare/v2.0.1...v2.0.2) (2025-01-17)
 
 
