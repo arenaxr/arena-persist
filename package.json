@@ -1,6 +1,6 @@
 {
   "name": "arena-persist",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "description": "Persistence service for arena pubsub messages over MQTT",
   "main": "server.js",
   "scripts": {
