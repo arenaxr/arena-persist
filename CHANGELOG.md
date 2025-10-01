@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.1](https://github.com/arenaxr/arena-persist/compare/v2.1.0...v2.1.1) (2025-10-01)
+
+
+### Bug Fixes
+
+* escape ! chars in special urls ([c505251](https://github.com/arenaxr/arena-persist/commit/c505251bdc27b4398bedc860d0cd63b1d279d9e4))
+
 ## [2.1.0](https://github.com/arenaxr/arena-persist/compare/v2.0.2...v2.1.0) (2025-02-13)
 
 
