@@ -124,7 +124,7 @@ exports.runExpress = async ({
 
     app.use(express.json());
 
-    app.get('/persist/\!allnamespaces', (req, res) => {
+    app.get('/persist/\\!allnamespaces', (req, res) => {
         const globalTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
             nameSpace: '+',
             sceneName: '+',
@@ -139,7 +139,7 @@ exports.runExpress = async ({
         });
     });
 
-    app.get('/persist/\!allscenes', (req, res) => {
+    app.get('/persist/\\!allscenes', (req, res) => {
         const globalTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
             nameSpace: '+',
             sceneName: '+',
@@ -170,7 +170,7 @@ exports.runExpress = async ({
         });
     });
 
-    app.get('/persist/:namespace/\!allscenes', (req, res) => {
+    app.get('/persist/:namespace/\\!allscenes', (req, res) => {
         const {namespace} = req.params;
         const namespaceTopic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
             nameSpace: namespace,
