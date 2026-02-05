@@ -94,32 +94,52 @@ exports.runExpress = async ({
                 })
                 .catch(() => tokenError(res));
         });
-        checkJWTSubs = (req, res, next) => {
+        const checkTokenRights = (req, res, next, rightsType, errorCallback) => {
             const {sceneId, namespace} = req.params;
-            // This specific PUBLISH topic matches for objects
-            const topic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+            const rights = req.jwtPayload[rightsType];
+            let valid = false;
+
+            // Check wildcards first
+            let topic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
                 nameSpace: namespace,
                 sceneName: sceneId,
                 userClient: '+',
                 objectId: '+',
             });
-            if (!matchJWT(topic, req.jwtPayload.subs)) {
-                return tokenSubError(res);
+            if (matchJWT(topic, rights)) {
+                valid = true;
+            } else {
+                // Check per-client permissions, keeping userClient in perms for id purposes
+                for (let i = 0; i < rights.length; i++) {
+                    const parts = rights[i].split('/');
+                    if (parts.length > 5) {
+                        const clientId = parts[5];
+                        topic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+                            nameSpace: namespace,
+                            sceneName: sceneId,
+                            userClient: clientId,
+                            objectId: '+',
+                        });
+                        if (MQTTPattern.matches(rights[i], topic)) {
+                            valid = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!valid) {
+                return errorCallback(res);
             }
             next();
         };
+
+        checkJWTSubs = (req, res, next) => {
+            checkTokenRights(req, res, next, 'subs', tokenSubError);
+        };
+
         checkJWTPubs = (req, res, next) => {
-            const {sceneId, namespace} = req.params;
-            const topic = TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
-                nameSpace: namespace,
-                sceneName: sceneId,
-                userClient: '+', // TODO: review with ivan, might need to be # here
-                objectId: '+',
-            });
-            if (!matchJWT(topic, req.jwtPayload.publ)) {
-                return tokenPubError(res);
-            }
-            next();
+            checkTokenRights(req, res, next, 'publ', tokenPubError);
         };
     }
 
