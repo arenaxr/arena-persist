@@ -1,5 +1,4 @@
 const MQTTPattern = require('mqtt-pattern');
-const jose = require('jose');
 
 const express = require('express');
 const cookieParser = require('cookie-parser');
@@ -20,6 +19,7 @@ const VERIFY_OPTIONS = {
  * @param {object} mongooseConnection - mongoose.connection
  * @param {function} loadTemplate - function to clone templates
  * @param {Set} persists - set of persisted objects
+ * @param {object} jose - jose library instance
  */
 exports.runExpress = async ({
     ArenaObject,
@@ -28,6 +28,7 @@ exports.runExpress = async ({
     mongooseConnection,
     loadTemplate,
     persists,
+    jose,
 }) => {
     const app = express();
 

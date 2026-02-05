@@ -6,23 +6,25 @@ const fs = require('fs');
 const mongoose = require('mongoose');
 const mqtt = require('async-mqtt');
 const {clearIntervalAsync, setIntervalAsync} = require('set-interval-async/dynamic');
-const jose = require('jose');
 
 const {runExpress} = require('./express_server');
 const {asyncForEach, asyncMapForEach, filterNulls, flatten} = require('./utils');
 const {TOPICS} = require('./topics');
 
 let jwk;
-if (config.jwt_public_keyfile) {
-    // TODO: Does alg need to be parameterized?
-    jose.importSPKI(fs.readFileSync(config.jwt_public_keyfile, 'utf8'), 'RS256')
-        .then((key) => {
-            jwk = key;
-        })
-        .catch(() => {
+let jose;
+
+async function loadJose() {
+    jose = await import('jose');
+    if (config.jwt_public_keyfile) {
+        // TODO: Does alg need to be parameterized?
+        try {
+            jwk = await jose.importSPKI(fs.readFileSync(config.jwt_public_keyfile, 'utf8'), 'RS256');
+        } catch (e) {
             console.error(`Error loading public key: ${config.jwt_public_keyfile}`);
             process.exit();
-        });
+        }
+    }
 }
 
 const arenaSchema = new mongoose.Schema({
@@ -69,6 +71,7 @@ async function updatePersists() {
 
 mongoose.connect(config.mongodb.uri).then(async () => {
     console.log('Connected to Mongodb');
+    await loadJose();
     await updatePersists();
     await runMQTT();
     await runExpress({
@@ -78,6 +81,7 @@ mongoose.connect(config.mongodb.uri).then(async () => {
         mongooseConnection: mongoose.connection,
         loadTemplate,
         persists,
+        jose,
     });
 }).catch((err) => {
     console.log('Mongodb Connection Error: ', err);
