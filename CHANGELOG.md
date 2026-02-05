@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.1.1](https://github.com/arenaxr/arena-persist/compare/v2.1.0...v2.1.1) (2026-02-05)
+
+
+### Bug Fixes
+
+* escape ! chars in special urls ([c505251](https://github.com/arenaxr/arena-persist/commit/c505251bdc27b4398bedc860d0cd63b1d279d9e4))
+* **jose:** convert v6 jose import to dynamic ([22050d8](https://github.com/arenaxr/arena-persist/commit/22050d8b4e28b65946bc167d0902ff4c83a42135))
+* **jwt:** updated jwt verify to allow any client id ([#52](https://github.com/arenaxr/arena-persist/issues/52)) ([cfeb3da](https://github.com/arenaxr/arena-persist/commit/cfeb3dae0dc68c466e7e0ced3295f36f1a26c336))
+
 ## [2.1.0](https://github.com/arenaxr/arena-persist/compare/v2.0.2...v2.1.0) (2025-02-13)
 
 
