@@ -103,6 +103,23 @@ async function runMQTT() {
     if (jwk) {
         mqttClientOptions.username = config.jwt_service_user;
         mqttClientOptions.password = config.jwt_service_token;
+        try {
+            const claims = jose.decodeJwt(config.jwt_service_token);
+            if (claims.exp) {
+                const now = Math.floor(Date.now() / 1000);
+                if (claims.exp < now) {
+                    console.error('--------------------------------------------------------------------------------');
+                    console.error('CRITICAL ERROR: The MQTT service token (config.json->`jwt_service_token`) has EXPIRED.');
+                    console.error(`Expiration Time: ${new Date(claims.exp * 1000).toLocaleString()}`);
+                    console.error(`Current Time:    ${new Date().toLocaleString()}`);
+                    console.error('MQTT connection will likely fail with "Access Denied".');
+                    console.error('Please create new service tokens with `init-config.sh` script.');
+                    console.error('--------------------------------------------------------------------------------');
+                }
+            }
+        } catch (err) {
+            console.error('Warning: Failed to decode jwt_service_token for expiration check:', err.message);
+        }
     }
     mqttClient = await mqtt.connectAsync(config.mqtt.uri, mqttClientOptions);
     console.log('Connected to MQTT');
