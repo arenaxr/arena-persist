@@ -5,6 +5,10 @@ Listens on MQTT for ARENA objects to save to mongodb store.
 A client then can make an HTTP request to the URL the server this service is running on the retrieve a list of
 persisted objects to load upon entering any scene.
 
+## Documentation
+- [Requirements & Architecture](REQUIREMENTS.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## Install
 
