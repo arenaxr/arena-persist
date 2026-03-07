@@ -7,18 +7,18 @@
 ```mermaid
 graph TD
     subgraph persist["arena-persist (Node.js)"]
-        mqttClient["MQTT Client\n(async-mqtt)"]
-        msgHandler["Message Handler\n(arenaMsgHandler)"]
-        mongoModel["Mongoose Model\n(ArenaObject)"]
-        expressAPI["Express REST API\n(express_server.js)"]
-        templateEngine["Template Engine\n(loadTemplate)"]
-        ttlManager["TTL Manager\n(publishExpires)"]
+        mqttClient["MQTT Client<br/>(async-mqtt)"]
+        msgHandler["Message Handler<br/>(arenaMsgHandler)"]
+        mongoModel["Mongoose Model<br/>(ArenaObject)"]
+        expressAPI["Express REST API<br/>(express_server.js)"]
+        templateEngine["Template Engine<br/>(loadTemplate)"]
+        ttlManager["TTL Manager<br/>(publishExpires)"]
     end
 
-    mqtt["Mosquitto\n(MQTT Broker)"]
+    mqtt["Mosquitto<br/>(MQTT Broker)"]
     mongo[("MongoDB")]
-    clients["Web / Python / Unity\nClients"]
-    nginx["Nginx\n(Reverse Proxy)"]
+    clients["Web / Python / Unity<br/>Clients"]
+    nginx["Nginx<br/>(Reverse Proxy)"]
 
     mqttClient <-->|subscribe realm/s/#| mqtt
     msgHandler -->|create/update/delete| mongoModel
