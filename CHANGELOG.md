@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.2.0](https://github.com/arenaxr/arena-persist/compare/v2.1.1...v2.2.0) (2026-03-11)
+
+
+### Features
+
+* add service token exp check on load ([99582ba](https://github.com/arenaxr/arena-persist/commit/99582ba9a786daabf7de6101f10cc5021555f2e9))
+
+
+### Bug Fixes
+
+* sync dependancies ([b63cf96](https://github.com/arenaxr/arena-persist/commit/b63cf9656c9e5e91e0ca6374765f797014ea541a))
+* sync dependancies ([5ca1909](https://github.com/arenaxr/arena-persist/commit/5ca1909cdfd337f0114c129458e03ce906ea3c74))
+* sync dependancies ([10a5dc9](https://github.com/arenaxr/arena-persist/commit/10a5dc911c8d08c482f49c0091577b1a7c30830b))
+
 ## [2.1.1](https://github.com/arenaxr/arena-persist/compare/v2.1.0...v2.1.1) (2026-02-05)
 
 
