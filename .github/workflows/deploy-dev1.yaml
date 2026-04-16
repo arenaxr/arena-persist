@@ -22,9 +22,10 @@ jobs:
           envs: DEPLOY_TARGET
           script_stop: true
           script: |
+            set -e
             cd  $DEPLOY_TARGET
-             git checkout master
-             git reset --hard HEAD
-             git pull
-             cd ..
-             ./staging.sh down && ./staging.sh up --force-recreate --build -d 
+            git checkout master
+            git reset --hard HEAD
+            git pull
+            cd ..
+            ./staging.sh down && ./staging.sh up --force-recreate --build -d 
