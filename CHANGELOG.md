@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/arenaxr/arena-persist/compare/v2.2.0...v2.2.1) (2026-05-09)
+
+
+### Miscellaneous Chores
+
+* trigger release for recent updates ([83738d4](https://github.com/arenaxr/arena-persist/commit/83738d4b83adf871ae0de36052749507b2690bfe))
+
 ## [2.2.0](https://github.com/arenaxr/arena-persist/compare/v2.1.1...v2.2.0) (2026-03-11)
 
 
