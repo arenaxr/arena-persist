@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: ssh deploy
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@b838bc2f27cd449b957159452d432aff91697637 # master
         env:
           DEPLOY_TARGET: ${{ secrets.ARENA_DEV1_DEPLOY_TARGET }}
         with:
