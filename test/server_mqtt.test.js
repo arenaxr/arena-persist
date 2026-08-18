@@ -64,11 +64,13 @@ const fakeQuery = (rows) => {
 const db = {
     calls: [],
     findRows: [],
+    findOneRows: [],
     counts: [],
     failures: {},
     reset() {
         db.calls.length = 0;
         db.findRows.length = 0;
+        db.findOneRows.length = 0;
         db.counts.length = 0;
         db.failures = {};
     },
@@ -101,6 +103,10 @@ const recordQueries = (ArenaObject) => {
     ArenaObject.find = (...args) => {
         record('find', args);
         return fakeQuery(db.findRows.length ? db.findRows.shift() : []);
+    };
+    ArenaObject.findOne = async (...args) => {
+        record('findOne', args);
+        return db.findOneRows.length ? db.findOneRows.shift() : null;
     };
     ArenaObject.countDocuments = async (...args) => {
         record('countDocuments', args);
@@ -474,6 +480,87 @@ describe('arenaMsgHandler create', () => {
         assert.deepEqual(mutation, {$set: {'attributes.material.color': '#ff0000'}, $unset: {}});
     });
 
+    /**
+     * Runs one expiry pass and drops what it produced, so a test starts from a drained
+     * expirations map. That map is module state and outlives a single test.
+     * @param {Object} harness - The harness from service().
+     * @return {Promise<void>} Settles once the drain is done.
+     */
+    const drainExpiries = async (harness) => {
+        await harness.publishExpires();
+        db.reset();
+        harness.published.length = 0;
+        harness.persists.clear();
+    };
+
+    it('keeps the key of an already-persisted object when a later create fails', async () => {
+        const harness = await service();
+        await deliver(harness, objectTopic('box-1'), box({persist: true}));
+        assert.deepEqual([...harness.persists], [key('box-1')]);
+        db.failures.findOneAndUpdate = new Error('not primary');
+        await deliver(harness, objectTopic('box-1'), box({persist: true}));
+        assert.deepEqual([...harness.persists], [key('box-1')],
+            'a failed create must not forget a key the object legitimately had');
+    });
+
+    it('leaves the existing expiry of an already-persisted object alone when a create fails', async () => {
+        const harness = await service();
+        await drainExpiries(harness);
+        await deliver(harness, objectTopic('long-lived'),
+            box({object_id: 'long-lived', persist: true, ttl: 3600}));
+        db.failures.findOneAndUpdate = new Error('not primary');
+        await deliver(harness, objectTopic('long-lived'),
+            box({object_id: 'long-lived', persist: true, ttl: -1}));
+        delete db.failures.findOneAndUpdate;
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published, [],
+            'a create whose write never landed must not shorten the tracked expiry');
+    });
+
+    it('remembers the key when a rejected create turns out to have been written anyway', async () => {
+        const harness = await service();
+        db.failures.findOneAndUpdate = new Error('not primary');
+        db.findOneRows.push({object_id: 'box-1', namespace: NAMESPACE, sceneId: SCENE});
+        await deliver(harness, objectTopic('box-1'), box({persist: true}));
+        assert.deepEqual(db.of('findOne')[0],
+            [{object_id: 'box-1', namespace: NAMESPACE, sceneId: SCENE}],
+            'the document is read back with the same filter the write used');
+        assert.deepEqual([...harness.persists], [key('box-1')],
+            'a write that landed but was not acknowledged still leaves a persisted object');
+    });
+
+    it('takes the expiry of such an object from the stored document, not from the failed message',
+        async () => {
+            const harness = await service();
+            await drainExpiries(harness);
+            db.failures.findOneAndUpdate = new Error('not primary');
+            db.findOneRows.push({
+                object_id: 'landed', namespace: NAMESPACE, sceneId: SCENE,
+                expireAt: new Date(Date.now() - 1000),
+            });
+            await deliver(harness, objectTopic('landed'),
+                box({object_id: 'landed', persist: true, ttl: 3600}));
+            delete db.failures.findOneAndUpdate;
+            harness.published.length = 0;
+            await harness.publishExpires();
+            assert.deepEqual(harness.published.map(({payload}) => JSON.parse(payload)),
+                [{object_id: 'landed', action: 'delete'}],
+                'the stored deadline is already past, whatever the message asked for');
+        });
+
+    it('gives up quietly when the read-back after a failed create fails too', async () => {
+        const harness = await service();
+        db.failures.findOneAndUpdate = new Error('not primary');
+        db.failures.findOne = new Error('no primary to read from');
+        await deliver(harness, objectTopic('box-1'), box({persist: true}));
+        assert.deepEqual([...harness.persists], [],
+            'nothing is assumed about a document that could not be read');
+        assert.equal(logs.log.filter((line) => line.startsWith('Error creating object')).length, 1,
+            'and the original write failure is still the one reported');
+        assert.equal(logs.log.filter((line) => line.startsWith('Could not read back object')).length, 1);
+    });
+
     it('does not track a ttl object for expiry when its create fails, and does when it succeeds', async () => {
         const harness = await service();
         db.failures.findOneAndUpdate = new Error('not primary');
@@ -556,6 +643,48 @@ describe('arenaMsgHandler update', () => {
         assert.deepEqual(harness.published.map(({payload}) => JSON.parse(payload)), [
             {object_id: 'later', action: 'delete'},
         ]);
+    });
+
+    it('does not track expiry when the write for a ttl update fails', async () => {
+        const harness = await service();
+        harness.persists.add(key('unwritten'));
+        db.failures.findOneAndUpdate = new Error('not primary');
+        await deliver(harness, objectTopic('unwritten'), update({object_id: 'unwritten', ttl: -1}));
+        delete db.failures.findOneAndUpdate;
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published, [],
+            'an update that never landed must not schedule an expiry the document does not carry');
+    });
+
+    it('does not track expiry when the write for a ttl overwrite fails', async () => {
+        const harness = await service();
+        harness.persists.add(key('unreplaced'));
+        db.failures.findOneAndReplace = new Error('not primary');
+        await deliver(harness, objectTopic('unreplaced'),
+            update({object_id: 'unreplaced', ttl: -1, overwrite: true}));
+        delete db.failures.findOneAndReplace;
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published, [],
+            'an overwrite that never landed must not schedule an expiry either');
+    });
+
+    it('tracks the stored expiry when a failed ttl update turns out to have landed', async () => {
+        const harness = await service();
+        harness.persists.add(key('acked-late'));
+        db.failures.findOneAndUpdate = new Error('not primary');
+        db.findOneRows.push({
+            object_id: 'acked-late', namespace: NAMESPACE, sceneId: SCENE,
+            expireAt: new Date(Date.now() - 1000),
+        });
+        await deliver(harness, objectTopic('acked-late'), update({object_id: 'acked-late', ttl: 3600}));
+        delete db.failures.findOneAndUpdate;
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published.map(({payload}) => JSON.parse(payload)),
+            [{object_id: 'acked-late', action: 'delete'}],
+            'the deadline followed is the one the document carries');
     });
 
     it('keeps the update in the scene the topic names', async () => {

@@ -304,6 +304,63 @@ async function runMQTT() {
 }
 
 /**
+ * Key an object is remembered under, in both persists and expirations.
+ * @param {object} arenaObj - Object following the ArenaObject schema.
+ * @return {string} namespace|sceneId|object_id
+ */
+function objKey(arenaObj) {
+    return `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`;
+}
+
+/**
+ * Records an object as persisted, and tracks it for expiry when it has one.
+ *
+ * Called with whatever the database actually holds, and only ever from outside the try
+ * that wraps a write: a throw from here would otherwise be caught by that write's catch
+ * and reported as a failed write, leaving a stored object unremembered.
+ *
+ * The key goes in through rememberPersist rather than persists.add so that a key recovered
+ * here is also recorded against a resync that is already in flight. Otherwise the refill
+ * would replay a query result that predates this create and drop the key again, which is
+ * the case this read-back exists to close.
+ * @param {object} arenaObj - Object following the ArenaObject schema, as stored.
+ */
+function rememberPersisted(arenaObj) {
+    if (arenaObj.expireAt) {
+        expirations.set(objKey(arenaObj), arenaObj);
+    }
+    rememberPersist(objKey(arenaObj));
+}
+
+/**
+ * Reads back the stored document of an object whose write rejected.
+ *
+ * A rejected write has not necessarily been rolled back: a lost acknowledgement, or a
+ * write concern that could not be met after the write applied, both reject while leaving
+ * the document in place. Bookkeeping keyed off the rejection alone would then be missing
+ * an object that is really there, and every later update and delete for it would be
+ * dropped by the persists checks until the hourly refresh puts the key back.
+ *
+ * Nothing is thrown from here. The connection that just failed a write very often fails
+ * this read too, and that must not replace the original failure or escape the handler;
+ * a null answer only means the object is left to the hourly refresh.
+ * @param {object} arenaObj - The object whose write rejected.
+ * @return {Promise<object|null>} The stored document, or null if there is none to be read.
+ */
+async function findStoredObject(arenaObj) {
+    try {
+        return await ArenaObject.findOne({
+            object_id: arenaObj.object_id,
+            namespace: arenaObj.namespace,
+            sceneId: arenaObj.sceneId,
+        });
+    } catch (err) {
+        console.log('Could not read back object after failed write: ', arenaObj.object_id, err);
+        return null;
+    }
+}
+
+/**
  * Handles incoming mqtt messages to update persist
  * @param {string} topic
  * @param {string} message
@@ -355,6 +412,13 @@ async function arenaMsgHandler(topic, message) {
     switch (msgJSON.action) {
     case 'create':
         if (msgJSON.persist === true) {
+            // The object to remember as persisted, if any: the one just written, or - when the
+            // write rejected but the document turns out to be stored anyway - the document that
+            // is stored. Bookkeeping runs after the try, never inside it, and never removes a
+            // key or an expiry the object already had: a create can fail for an object that is
+            // genuinely persisted, and dropping its key would start discarding valid updates
+            // for it.
+            let stored = null;
             try {
                 await ArenaObject.findOneAndUpdate({
                     object_id: arenaObj.object_id,
@@ -364,25 +428,15 @@ async function arenaMsgHandler(topic, message) {
                     upsert: true,
                     runValidators: true,
                 });
-                // Bookkeeping only once the write has resolved. A key recorded for an
-                // object that was never stored gets later updates for it past the
-                // persists check below, where they are applied to a document that does
-                // not exist and are silently lost.
-                if (arenaObj.expireAt) {
-                    expirations.set(
-                        `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
-                        arenaObj);
-                }
-                rememberPersist(
-                    `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
+                stored = arenaObj;
             } catch (err) {
-                // A failed create is logged and nothing else, as before. Any key this
-                // object already had is deliberately left in place: the create may have
-                // failed for an object that is genuinely persisted, and dropping its key
-                // would start discarding valid updates for it. Nothing is rethrown
-                // either, since this handler is called by the MQTT client with no caller
-                // to catch it.
+                // Logged and not rethrown, as before: this handler is called by the MQTT
+                // client with no caller to catch anything.
                 console.log('Error creating object: ', arenaObj.object_id, err);
+                stored = await findStoredObject(arenaObj);
+            }
+            if (stored) {
+                rememberPersisted(stored);
             }
         }
         break;
@@ -390,6 +444,7 @@ async function arenaMsgHandler(topic, message) {
         if (msgJSON.persist && msgJSON.persist !== false) {
             if (persists.has(
                 `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
+                let written = false;
                 if (msgJSON.overwrite) {
                     try {
                         await ArenaObject.findOneAndReplace(
@@ -400,6 +455,7 @@ async function arenaMsgHandler(topic, message) {
                             },
                             insertObj,
                         );
+                        written = true;
                     } catch (err) {
                         console.log('Does not exist to update:', arenaObj.object_id);
                     }
@@ -415,15 +471,30 @@ async function arenaMsgHandler(topic, message) {
                             },
                             {$set: sets, $unset: unSets},
                         );
+                        written = true;
                     } catch (err) {
                         console.log('Does not exist:', arenaObj.object_id);
                     }
                 }
                 if (arenaObj.expireAt) {
-                    expirations.set(
-                        `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
-                        arenaObj,
-                    );
+                    if (written) {
+                        expirations.set(
+                            `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
+                            arenaObj,
+                        );
+                    } else {
+                        // The write did not resolve, so this message's deadline is not the
+                        // stored one. Tracking it anyway is worse than not tracking it: the
+                        // expiry pass would publish a delete for an object the database still
+                        // has, sweep its children, and drop its persists key, leaving a parent
+                        // no client can see and no message can reach until the hourly refresh.
+                        // What the database does hold is still worth following, in case the
+                        // write landed and only its acknowledgement was lost.
+                        const stored = await findStoredObject(arenaObj);
+                        if (stored && stored.expireAt) {
+                            expirations.set(objKey(stored), stored);
+                        }
+                    }
                 }
             }
         }
