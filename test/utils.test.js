@@ -8,7 +8,7 @@
 const assert = require('node:assert/strict');
 const {describe, it} = require('node:test');
 
-const {asyncForEach, asyncMapForEach, filterNulls, flatten} = require('../utils');
+const {asyncForEach, asyncMapForEach, escapeRegExp, filterNulls, flatten} = require('../utils');
 
 /**
  * Resolves after the given delay, used to stagger async callbacks in ordering tests.
@@ -441,5 +441,35 @@ describe('asyncMapForEach', () => {
         });
         assert.deepStrictEqual(seen, ['a', 'b']);
         assert.strictEqual(map.size, 0);
+    });
+});
+
+describe('escapeRegExp', () => {
+    const cases = [
+        {name: 'leaves plain text alone', input: 'shelf', expected: 'shelf'},
+        {
+            name: 'escapes the pipe in a template container id, which would otherwise be alternation',
+            input: 'public|store::shelf::',
+            expected: 'public\\|store::shelf::',
+        },
+        {
+            name: 'escapes every metacharacter',
+            input: '.*+?^${}()|[]\\',
+            expected: '\\.\\*\\+\\?\\^\\$\\{\\}\\(\\)\\|\\[\\]\\\\',
+        },
+    ];
+
+    cases.forEach(({name, input, expected}) => {
+        it(name, () => {
+            assert.strictEqual(escapeRegExp(input), expected);
+        });
+    });
+
+    it('matches only the literal prefix it was built from', () => {
+        const anchored = RegExp('^' + escapeRegExp('public|store::shelf::'));
+        assert.ok(anchored.test('public|store::shelf::box'));
+        // Unescaped, '^public|store::shelf::' would match anything starting with 'public'.
+        assert.ok(!anchored.test('public|lobby|other'));
+        assert.ok(!anchored.test('publicX'));
     });
 });
