@@ -811,6 +811,46 @@ describe('loadTemplate', () => {
         assert.ok(messages.every(({message}) => message.persist === true), 'every clone is persisted');
     });
 
+    it('places the container where opts.attributes asks when the call names no pose', async () => {
+        const harness = await service();
+        // Placing the container through attributes is the only way a caller could do it before
+        // opts.pose was read at all, so reading opts.pose must not move such a caller's container:
+        // an attributes-only call keeps its own position and its own rotation, quaternion included.
+        const {created, messages} = await instantiate(harness, [], {
+            attributes: {
+                object_type: 'templateContainer',
+                position: {x: 5, y: 0, z: 0},
+                rotation: {x: 0, y: 0.7071, z: 0, w: 0.7071},
+            },
+        });
+        assert.deepEqual(created[0].attributes, {
+            object_type: 'templateContainer',
+            position: {x: 5, y: 0, z: 0},
+            rotation: {x: 0, y: 0.7071, z: 0, w: 0.7071},
+        }, 'the container is written where the attributes put it');
+        assert.deepEqual(messages[0].message.data, created[0].attributes,
+            'and the broker is told the same');
+    });
+
+    it('lets a pose that is supplied outrank the pose in opts.attributes, empty or not', async () => {
+        const harness = await service();
+        const attributes = {object_type: 'templateContainer', position: {x: 5, y: 0, z: 0}};
+        const posed = await instantiate(harness, [], {attributes, pose: {position: {x: 1, y: 2, z: 3}}});
+        assert.deepEqual(posed.created[0].attributes, {
+            object_type: 'templateContainer',
+            position: {x: 1, y: 2, z: 3},
+            rotation: {x: 0, y: 0, z: 0},
+        }, 'a pose naming a position wins over the position in the attributes');
+        db.reset();
+        harness.published.length = 0;
+        const empty = await instantiate(harness, [], {attributes, pose: {}});
+        assert.deepEqual(empty.created[0].attributes, {
+            object_type: 'templateContainer',
+            position: {x: 0, y: 0, z: 0},
+            rotation: {x: 0, y: 0, z: 0},
+        }, 'and an empty pose is still a request to be placed, so it lands on the defaults');
+    });
+
     it('marks the created objects as persisted only when asked to', async () => {
         const harness = await service();
         const transient = await instantiate(harness, [templateObj('shelf-1')]);

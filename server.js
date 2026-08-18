@@ -557,11 +557,13 @@ const poseAxes = (component, name) => {
  * @param {boolean}[opts.noParent] - Do not wrap all cloned objects in a parent container
  * @param {Number} [opts.ttl] - Duration TTL (seconds) of Template container
  * @param {boolean} [opts.persist] - Whether to persist *all* templated objects
- * @param {Object} [opts.attributes] - data payload Template container. Any `position` or
- *     `rotation` in here is overridden: those two always come from opts.pose over the defaults.
+ * @param {Object} [opts.attributes] - data payload Template container. Its `position` and
+ *     `rotation` are overridden only when opts.pose is supplied; a call that names no pose keeps
+ *     whatever pose these attributes carry, as it always has.
  *     Ignored entirely when opts.noParent is set, since then there is no container to place.
- * @param {Object} [opts.pose] - Where to place the Template container. Each of the axes it names
- *     must be a finite number; anything else keeps the default for that axis.
+ * @param {Object} [opts.pose] - Where to place the Template container, outranking any `position`
+ *     or `rotation` in opts.attributes. Each of the axes it names must be a finite number;
+ *     anything else keeps the default for that axis. Omit it to leave opts.attributes alone.
  * @param {Object} [opts.pose.position] - position of the Template container
  * @param {Object} [opts.pose.rotation] - rotation of the Template container
  */
@@ -590,14 +592,21 @@ const loadTemplate = async (
     // A requested pose places the container one axis at a time over CONTAINER_POSE_DEFAULTS, so a
     // request naming only position.x, or only a position and no rotation, keeps the default for
     // every axis it leaves out - and so does one naming an axis, or a whole component, that could
-    // not place anything. The container therefore always carries a full numeric position and
-    // rotation, which is what it had before the pose was wired through at all.
-    const pose = options.pose ?? {};
-    options.attributes = {
-        ...options.attributes,
-        position: {...CONTAINER_POSE_DEFAULTS.position, ...poseAxes(pose.position, 'position')},
-        rotation: {...CONTAINER_POSE_DEFAULTS.rotation, ...poseAxes(pose.rotation, 'rotation')},
-    };
+    // not place anything. A pose that is supplied therefore always leaves the container carrying a
+    // full numeric position and rotation.
+    // A pose that is not supplied at all leaves options.attributes untouched, so a caller placing
+    // the container through opts.attributes still gets the pose it asked for. Only the absence
+    // yields: an empty pose object is a request to be placed, and lands on the defaults. The MQTT
+    // handler always sends a pose, so an MQTT request with no position or rotation still ends up
+    // at the origin, exactly where it was before the pose was wired through at all.
+    const pose = options.pose;
+    if (pose !== undefined && pose !== null) {
+        options.attributes = {
+            ...options.attributes,
+            position: {...CONTAINER_POSE_DEFAULTS.position, ...poseAxes(pose.position, 'position')},
+            rotation: {...CONTAINER_POSE_DEFAULTS.rotation, ...poseAxes(pose.rotation, 'rotation')},
+        };
+    }
     const templatePrefix = `${templateNamespace}|${templateSceneId}::${instanceId}`;
     // Create template container, always
     if (!options.noParent) {
