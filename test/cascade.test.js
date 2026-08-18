@@ -15,23 +15,53 @@ const {
     CASCADE_BATCH_SIZE,
     MAX_CASCADE_DEPTH,
     MAX_CASCADE_NODES,
+    buildForget,
     cascadeDeleteDescendants,
+    deleteObjectAndDescendants,
 } = require('../cascade');
 
 const TARGET = {objectId: 'root', namespace: 'public', sceneId: 'lobby'};
+const TEMPLATE_TARGET = {objectId: 'public|store::shelf', namespace: 'public', sceneId: 'lobby'};
 
 /**
  * Builds injected handlers backed by an in-memory tree, recording every call.
+ *
+ * findChildIds honours the limit it is given, exactly as a limited MongoDB query
+ * would, so the recorded row counts show how much a level actually transferred.
  * @param {Object<string, Array<string>>} tree - Map of parent object_id to child object_ids.
- * @return {{handlers: Object, calls: Object}} Handlers to pass to the walk, and the calls
- *     they recorded: queried frontiers, delete batches, forgotten ids, and warnings.
+ * @param {Object} [store] - The rest of the fake database.
+ * @param {Array<string>} [store.orphans] - object_ids whose parent matches the swept prefix.
+ * @return {{handlers: Object, calls: Object}} Handlers to pass to the walk, and the calls they
+ *     recorded: queried frontiers, query limits, returned row counts, orphan sweep queries,
+ *     root deletes, delete batches, forgotten ids, warnings and logged errors.
  */
-const fakeStore = (tree) => {
-    const calls = {queries: [], batches: [], forgotten: [], warnings: []};
+const fakeStore = (tree, {orphans = []} = {}) => {
+    const calls = {
+        queries: [],
+        limits: [],
+        returned: [],
+        orphanQueries: [],
+        rootDeletes: 0,
+        batches: [],
+        forgotten: [],
+        warnings: [],
+        errors: [],
+    };
     const handlers = {
-        findChildIds: async (parentIds) => {
+        deleteRoot: async () => {
+            calls.rootDeletes += 1;
+        },
+        findChildIds: async (parentIds, limit) => {
             calls.queries.push([...parentIds]);
-            return parentIds.reduce((found, parentId) => found.concat(tree[parentId] || []), []);
+            calls.limits.push(limit);
+            const found = parentIds.reduce((acc, parentId) => acc.concat(tree[parentId] || []), []);
+            const rows = found.slice(0, limit);
+            calls.returned.push(rows.length);
+            return rows;
+        },
+        findOrphanIds: async (parentPrefix, limit) => {
+            calls.orphanQueries.push([parentPrefix, limit]);
+            return orphans.slice(0, limit);
         },
         deleteIds: async (objectIds) => {
             calls.batches.push([...objectIds]);
@@ -41,6 +71,9 @@ const fakeStore = (tree) => {
         },
         warn: (message) => {
             calls.warnings.push(message);
+        },
+        logError: (...args) => {
+            calls.errors.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(' '));
         },
     };
     return {handlers, calls};
@@ -320,6 +353,280 @@ describe('cascadeDeleteDescendants', () => {
             assert.deepStrictEqual(result.deleted, ['r0', 'r1', 'r2', 'r3', 'r4']);
             assert.strictEqual(result.capped, null);
             assert.strictEqual(calls.queries.length, 6);
+        });
+    });
+
+    describe('bounded level queries', () => {
+        it('asks each level for no more than the remaining budget, plus one sentinel row', async () => {
+            const {handlers, calls} = fakeStore({root: ['a', 'b'], a: ['a1']});
+
+            await cascadeDeleteDescendants(TARGET, handlers, {maxNodes: 10});
+
+            // 10 left, then 8 after a and b, then 7 after a1; one extra row each time.
+            assert.deepStrictEqual(calls.limits, [11, 9, 8]);
+        });
+
+        it('limits by the default node cap when no override is given', async () => {
+            const {handlers, calls} = fakeStore({root: ['a']});
+            await cascadeDeleteDescendants(TARGET, handlers);
+            assert.deepStrictEqual(calls.limits, [MAX_CASCADE_NODES + 1, MAX_CASCADE_NODES]);
+        });
+
+        it('never transfers a whole oversized level before the node cap applies', async () => {
+            const many = Array.from({length: 5000}, (unused, i) => `c${i}`);
+            const {handlers, calls} = fakeStore({root: many});
+
+            const result = await cascadeDeleteDescendants(TARGET, handlers, {maxNodes: 10, batchSize: 4});
+
+            assert.deepStrictEqual(calls.limits, [11], 'the query itself must carry the budget');
+            assert.deepStrictEqual(calls.returned, [11], 'only the budget plus a sentinel may be fetched');
+            assert.strictEqual(result.capped, 'nodes');
+            assert.strictEqual(result.deleted.length, 10);
+            assert.deepStrictEqual(calls.forgotten, result.deleted);
+            assert.strictEqual(calls.warnings.length, 1);
+        });
+
+        it('deletes an oversized level up to the cap and queries no further level', async () => {
+            const many = Array.from({length: 300}, (unused, i) => `c${i}`);
+            const tree = {root: many};
+            many.forEach((id) => {
+                tree[id] = [`${id}g`];
+            });
+            const {handlers, calls} = fakeStore(tree);
+
+            const result = await cascadeDeleteDescendants(TARGET, handlers, {maxNodes: 5});
+
+            assert.deepStrictEqual(result.deleted, ['c0', 'c1', 'c2', 'c3', 'c4']);
+            assert.deepStrictEqual(calls.queries, [['root']]);
+        });
+    });
+
+    describe('cap reporting', () => {
+        it('reports the depth cap as a possibility, since the subtree may have ended there', async () => {
+            const {handlers, calls} = fakeStore(chain(2));
+
+            const result = await cascadeDeleteDescendants(TARGET, handlers, {maxDepth: 2});
+
+            // The whole subtree really was deleted: the level that would have proved
+            // it empty is simply never queried, so the warning must not claim orphans.
+            assert.strictEqual(result.capped, 'depth');
+            assert.deepStrictEqual(result.deleted, ['n1', 'n2']);
+            assert.strictEqual(calls.warnings.length, 1);
+            assert.match(calls.warnings[0], /any deeper descendants are left orphaned/);
+            assert.doesNotMatch(calls.warnings[0], /the remaining descendants/);
+        });
+
+        it('reports the node cap as a fact, since the level really did hold more', async () => {
+            const tree = {root: ['a', 'b'], a: ['a1', 'a2'], b: ['b1', 'b2']};
+            const {handlers, calls} = fakeStore(tree);
+
+            const result = await cascadeDeleteDescendants(TARGET, handlers, {maxNodes: 3});
+
+            assert.strictEqual(result.capped, 'nodes');
+            assert.match(calls.warnings[0], /the remaining descendants are left orphaned/);
+            assert.doesNotMatch(calls.warnings[0], /any deeper descendants/);
+        });
+    });
+});
+
+describe('buildForget', () => {
+    const scope = {namespace: 'public', sceneId: 'lobby'};
+
+    it('prunes both the persists key and the expirations entry', () => {
+        const persists = new Set(['public|lobby|a', 'public|lobby|keep']);
+        const expirations = new Map([['public|lobby|a', {}], ['public|lobby|keep', {}]]);
+
+        buildForget(persists, expirations, scope)('a');
+
+        assert.ok(!persists.has('public|lobby|a'));
+        assert.ok(!expirations.has('public|lobby|a'),
+            'a surviving expiration fires a delete for a dead id, and un-persists a recreated one');
+        assert.ok(persists.has('public|lobby|keep'));
+        assert.ok(expirations.has('public|lobby|keep'));
+    });
+
+    it('only touches the given scene', () => {
+        const persists = new Set(['public|lobby|a', 'public|other|a']);
+        const expirations = new Map([['public|lobby|a', {}], ['public|other|a', {}]]);
+
+        buildForget(persists, expirations, scope)('a');
+
+        assert.deepStrictEqual([...persists], ['public|other|a']);
+        assert.deepStrictEqual([...expirations.keys()], ['public|other|a']);
+    });
+
+    it('leaves nothing behind for a descendant that had a TTL of its own', async () => {
+        const persists = new Set(['public|lobby|root', 'public|lobby|a', 'public|lobby|a1']);
+        const expirations = new Map([
+            ['public|lobby|root', {object_id: 'root'}],
+            ['public|lobby|a1', {object_id: 'a1'}],
+        ]);
+        const {handlers} = fakeStore({root: ['a'], a: ['a1']});
+
+        await cascadeDeleteDescendants(TARGET, Object.assign({}, handlers, {
+            forget: buildForget(persists, expirations, scope),
+        }));
+
+        assert.deepStrictEqual([...persists], ['public|lobby|root'], 'the caller forgets the root itself');
+        assert.deepStrictEqual([...expirations.keys()], ['public|lobby|root']);
+    });
+});
+
+describe('deleteObjectAndDescendants', () => {
+    const scope = {namespace: 'public', sceneId: 'lobby'};
+
+    it('deletes the root first, then the subtree, then forgets the root', async () => {
+        const {handlers, calls} = fakeStore({root: ['a'], a: ['a1']});
+
+        const result = await deleteObjectAndDescendants(TARGET, handlers);
+
+        assert.strictEqual(result.rootDeleted, true);
+        assert.strictEqual(calls.rootDeletes, 1);
+        assert.deepStrictEqual(result.deleted, ['a', 'a1']);
+        assert.deepStrictEqual(calls.forgotten, ['a', 'a1', 'root']);
+        assert.deepStrictEqual(calls.errors, []);
+    });
+
+    it('leaves the subtree and every in-memory key alone when the root delete fails', async () => {
+        const persists = new Set(['public|lobby|root', 'public|lobby|a', 'public|lobby|a1']);
+        const expirations = new Map([['public|lobby|root', {object_id: 'root'}]]);
+        const {handlers, calls} = fakeStore({root: ['a'], a: ['a1']});
+        const failing = Object.assign({}, handlers, {
+            deleteRoot: async () => {
+                throw new Error('connection lost');
+            },
+            forget: buildForget(persists, expirations, scope),
+        });
+
+        const result = await deleteObjectAndDescendants(TARGET, failing);
+
+        assert.strictEqual(result.rootDeleted, false);
+        assert.deepStrictEqual(result.deleted, []);
+        assert.deepStrictEqual(result.orphans, []);
+        assert.deepStrictEqual(calls.queries, [], 'no descendant may be queried');
+        assert.deepStrictEqual(calls.batches, [], 'no descendant may be deleted');
+        assert.strictEqual(persists.size, 3, 'the keys must survive so a retried delete still gets through');
+        assert.strictEqual(expirations.size, 1);
+        assert.strictEqual(calls.errors.length, 1);
+        assert.match(calls.errors[0], /connection lost/);
+    });
+
+    it('still cascades when the root was simply not there, which is not a failure', async () => {
+        // A delete of a missing document resolves with nothing deleted, so the
+        // subtree and the in-memory keys must still be cleaned up.
+        const {handlers, calls} = fakeStore({root: ['a']});
+
+        const result = await deleteObjectAndDescendants(TARGET, handlers);
+
+        assert.strictEqual(result.rootDeleted, true);
+        assert.deepStrictEqual(result.deleted, ['a']);
+        assert.deepStrictEqual(calls.forgotten, ['a', 'root']);
+        assert.deepStrictEqual(calls.errors, []);
+    });
+
+    it('forgets the root and sweeps even when the walk itself fails', async () => {
+        const {handlers, calls} = fakeStore({root: ['a']});
+        const broken = Object.assign({}, handlers, {
+            findChildIds: async () => {
+                throw new Error('query failed');
+            },
+        });
+
+        const result = await deleteObjectAndDescendants(TARGET, broken);
+
+        assert.strictEqual(result.rootDeleted, true);
+        assert.deepStrictEqual(result.deleted, []);
+        assert.deepStrictEqual(calls.forgotten, ['root']);
+        assert.strictEqual(calls.errors.length, 1);
+        assert.match(calls.errors[0], /query failed/);
+    });
+
+    describe('broken-chain template sweep', () => {
+        const orphans = ['public|store::shelf::box', 'public|store::shelf::box::lid'];
+
+        it('deletes the swept orphans by id, so each one can also be forgotten', async () => {
+            const {handlers, calls} = fakeStore({}, {orphans});
+
+            const result = await deleteObjectAndDescendants(TEMPLATE_TARGET, handlers);
+
+            assert.deepStrictEqual(calls.orphanQueries, [['public|store::shelf::', MAX_CASCADE_NODES + 1]]);
+            assert.deepStrictEqual(result.orphans, orphans);
+            assert.deepStrictEqual(calls.batches, [orphans]);
+            assert.deepStrictEqual(calls.forgotten, orphans.concat(['public|store::shelf']));
+        });
+
+        it('prunes every swept orphan from persists and expirations', async () => {
+            const keys = orphans.map((id) => `public|lobby|${id}`);
+            const persists = new Set(['public|lobby|public|store::shelf', ...keys]);
+            const expirations = new Map(orphans.map((id) => [`public|lobby|${id}`, {object_id: id}]));
+            const {handlers} = fakeStore({}, {orphans});
+
+            await deleteObjectAndDescendants(TEMPLATE_TARGET, Object.assign({}, handlers, {
+                forget: buildForget(persists, expirations, scope),
+            }));
+
+            assert.strictEqual(persists.size, 0, 'the broken-chain orphans are exactly the stale keys');
+            assert.strictEqual(expirations.size, 0);
+        });
+
+        it('does not sweep for an id that is not a template container', async () => {
+            const {handlers, calls} = fakeStore({}, {orphans});
+            const result = await deleteObjectAndDescendants(TARGET, handlers);
+            assert.deepStrictEqual(calls.orphanQueries, []);
+            assert.deepStrictEqual(result.orphans, []);
+        });
+
+        it('bounds the sweep by the budget the walk left over', async () => {
+            const {handlers, calls} = fakeStore({'public|store::shelf': ['c1', 'c2']}, {orphans});
+
+            await deleteObjectAndDescendants(TEMPLATE_TARGET, handlers, {maxNodes: 6});
+
+            assert.deepStrictEqual(calls.orphanQueries, [['public|store::shelf::', 5]]);
+        });
+
+        it('stops sweeping and warns when the remaining budget runs out', async () => {
+            const {handlers, calls} = fakeStore({}, {orphans});
+
+            const result = await deleteObjectAndDescendants(TEMPLATE_TARGET, handlers, {maxNodes: 1});
+
+            assert.deepStrictEqual(result.orphans, [orphans[0]]);
+            assert.strictEqual(calls.warnings.length, 1);
+            assert.match(calls.warnings[0], /template orphans under public\|store::shelf/);
+            assert.match(calls.warnings[0], /more orphans may remain/);
+        });
+
+        it('skips the sweep entirely when the walk already spent the whole budget', async () => {
+            const {handlers, calls} = fakeStore({'public|store::shelf': ['c1', 'c2']}, {orphans});
+
+            await deleteObjectAndDescendants(TEMPLATE_TARGET, handlers, {maxNodes: 2});
+
+            assert.deepStrictEqual(calls.orphanQueries, []);
+        });
+
+        it('reports the sweep as failed without losing the rest of the delete', async () => {
+            const {handlers, calls} = fakeStore({}, {orphans});
+            const broken = Object.assign({}, handlers, {
+                findOrphanIds: async () => {
+                    throw new Error('regex query failed');
+                },
+            });
+
+            const result = await deleteObjectAndDescendants(TEMPLATE_TARGET, broken);
+
+            assert.strictEqual(result.rootDeleted, true);
+            assert.deepStrictEqual(result.orphans, []);
+            assert.deepStrictEqual(calls.forgotten, ['public|store::shelf']);
+            assert.strictEqual(calls.errors.length, 1);
+            assert.match(calls.errors[0], /regex query failed/);
+        });
+
+        it('deletes the swept orphans in batches, yielding between them', async () => {
+            const many = Array.from({length: 5}, (unused, i) => `public|store::shelf::o${i}`);
+            const {handlers, calls} = fakeStore({}, {orphans: many});
+
+            await deleteObjectAndDescendants(TEMPLATE_TARGET, handlers, {batchSize: 2});
+
+            assert.deepStrictEqual(calls.batches, [many.slice(0, 2), many.slice(2, 4), many.slice(4)]);
         });
     });
 });

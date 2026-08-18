@@ -51,6 +51,15 @@ exports.filterNulls = (obj) => {
     return [sets, unSets];
 };
 
+/**
+ * Escapes every regular expression metacharacter in a literal string, so it can be
+ * embedded in a RegExp and only ever match itself. ARENA object ids routinely
+ * contain '|' and '.', which would otherwise read as alternation and wildcards.
+ * @param {string} literal - Text to match literally.
+ * @return {string} The same text, safe to embed in a regular expression.
+ */
+exports.escapeRegExp = (literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // eslint-disable-next-line no-extend-native
 String.prototype.formatStr = function formatStr(...args) {
     const params = arguments.length === 1 && typeof args[0] === 'object' ? args[0] : args;
