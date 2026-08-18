@@ -320,6 +320,10 @@ async function arenaMsgHandler(topic, message) {
  * parent themselves, so no delete is published for the descendants. The ordering,
  * the bounded walk and the broken-chain sweep all live in cascade.js; this function
  * is only the MongoDB and in-memory-collection adapter for them.
+ *
+ * If any part of that fails, this object's persists key is deliberately left in
+ * place even though its document is gone, so that a repeated delete gets past the
+ * caller's persists check and can finish removing what is still below it.
  * @param {object} arenaObj - The object to delete, following ArenaObject schema
  * @return {Promise<void>}
  */

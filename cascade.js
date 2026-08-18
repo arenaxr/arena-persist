@@ -51,6 +51,26 @@ const CASCADE_BATCH_SIZE = 100;
 const yieldToEventLoop = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /**
+ * Attaches what a walk had already done to the error that interrupted it.
+ *
+ * The ids in a partial result are genuinely deleted, so a caller that carries on
+ * past the failure has to account for them. Without this the node budget they
+ * spent is handed out a second time to the work that follows, letting one request
+ * delete far more than the advertised cap, and the ids never appear in the
+ * reported result at all.
+ *
+ * @param {*} err - Whatever the interrupted walk threw.
+ * @param {Object} partial - The walk's result as of the failure.
+ * @return {*} The same error, carrying partial as its partialResult property where it can.
+ */
+const withPartialResult = (err, partial) => {
+    if (err !== null && typeof err === 'object' && !Object.isFrozen(err)) {
+        err.partialResult = partial;
+    }
+    return err;
+};
+
+/**
  * Builds the callback that drops one object's in-memory keys as it is deleted.
  *
  * Both collections are pruned, not just persists. An expirations entry left
@@ -64,13 +84,23 @@ const yieldToEventLoop = () => new Promise((resolve) => setTimeout(resolve, 0));
  * @param {Object} scope - Scene that the ids being forgotten belong to.
  * @param {string} scope.namespace - namespace of the scene.
  * @param {string} scope.sceneId - sceneId of the scene.
- * @return {function(string): void} Callback that prunes one object_id from both collections.
+ * @return {function(string, Object=): void} Callback that prunes one object_id from both
+ *     collections, or from expirations alone when passed {retainPersist: true}.
  */
-const buildForget = (persists, expirations, {namespace, sceneId}) => (objectId) => {
-    const key = `${namespace}|${sceneId}|${objectId}`;
-    persists.delete(key);
-    expirations.delete(key);
-};
+const buildForget = (persists, expirations, {namespace, sceneId}) =>
+    (objectId, {retainPersist = false} = {}) => {
+        const key = `${namespace}|${sceneId}|${objectId}`;
+        // A retained persists key marks an object whose own document is gone but
+        // whose delete did not finish, so that a retried delete still gets past the
+        // caller's persists check and can resume the cleanup. The TTL entry goes
+        // either way: the document it would have expired is already deleted, and an
+        // entry that outlives its document is exactly what fires a delete for a dead
+        // id and un-persists whatever was later created with that id in this scene.
+        if (!retainPersist) {
+            persists.delete(key);
+        }
+        expirations.delete(key);
+    };
 
 /**
  * Deletes every descendant of an object, breadth-first, one query per level.
@@ -119,55 +149,61 @@ const cascadeDeleteDescendants = async (target, handlers, limits = {}) => {
     let frontier = [objectId];
     let levels = 0;
     let capped = null;
-    while (frontier.length) {
-        if (levels >= maxDepth) {
-            capped = 'depth';
-            break;
-        }
-        // Ask for no more than the budget still left, plus one sentinel row that
-        // reveals a level too large to finish. Fetching a level in full and
-        // truncating it afterwards would let one object with a huge number of
-        // children cost unbounded transfer, memory and event loop time first.
-        const remaining = maxNodes - deleted.length;
-        const childIds = await findChildIds(frontier, remaining + 1);
-        levels += 1;
-        if (childIds.length > remaining) {
-            capped = 'nodes';
-        }
-        const nextFrontier = [];
-        await asyncForEach(childIds.slice(0, remaining), async (childId) => {
-            if (!visited.has(childId)) {
-                visited.add(childId);
-                nextFrontier.push(childId);
+    try {
+        while (frontier.length) {
+            if (levels >= maxDepth) {
+                capped = 'depth';
+                break;
             }
-        });
-        if (!nextFrontier.length) {
-            break;
-        }
-        for (let i = 0; i < nextFrontier.length; i += batchSize) {
-            const batch = nextFrontier.slice(i, i + batchSize);
-            await deleteIds(batch);
-            await asyncForEach(batch, async (childId) => {
-                forget(childId);
-                deleted.push(childId);
+            // Ask for no more than the budget still left, plus one sentinel row that
+            // reveals a level too large to finish. Fetching a level in full and
+            // truncating it afterwards would let one object with a huge number of
+            // children cost unbounded transfer, memory and event loop time first.
+            const remaining = maxNodes - deleted.length;
+            const childIds = await findChildIds(frontier, remaining + 1);
+            levels += 1;
+            if (childIds.length > remaining) {
+                capped = 'nodes';
+            }
+            const nextFrontier = [];
+            await asyncForEach(childIds.slice(0, remaining), async (childId) => {
+                if (!visited.has(childId)) {
+                    visited.add(childId);
+                    nextFrontier.push(childId);
+                }
             });
-            // Yielding is what keeps a large cascade from blocking the MQTT handler,
-            // and it is also the one race accepted here: a message serviced during
-            // the yield can reparent a descendant this walk has not visited yet. If
-            // it is moved out of the subtree the next query no longer finds it, so
-            // both the document and its persists key survive until an ancestor is
-            // deleted again or the hourly persists refresh runs. A reconciliation
-            // pass re-querying the already-visited ids was considered and rejected:
-            // it costs a query over the whole visited set, anything it found would
-            // reopen the same window one level deeper, and a reparent after its own
-            // query is still missed. Closing the window means serializing the
-            // message handler per scene, a larger change than this fix.
-            await yieldToEventLoop();
+            if (!nextFrontier.length) {
+                break;
+            }
+            for (let i = 0; i < nextFrontier.length; i += batchSize) {
+                const batch = nextFrontier.slice(i, i + batchSize);
+                await deleteIds(batch);
+                await asyncForEach(batch, async (childId) => {
+                    forget(childId);
+                    deleted.push(childId);
+                });
+                // Yielding is what keeps a large cascade from blocking the MQTT handler,
+                // and it is also the one race accepted here: a message serviced during
+                // the yield can reparent a descendant this walk has not visited yet. If
+                // it is moved out of the subtree the next query no longer finds it, so
+                // both the document and its persists key survive until an ancestor is
+                // deleted again or the hourly persists refresh runs. A reconciliation
+                // pass re-querying the already-visited ids was considered and rejected:
+                // it costs a query over the whole visited set, anything it found would
+                // reopen the same window one level deeper, and a reparent after its own
+                // query is still missed. Closing the window means serializing the
+                // message handler per scene, a larger change than this fix.
+                await yieldToEventLoop();
+            }
+            if (capped) {
+                break;
+            }
+            frontier = nextFrontier;
         }
-        if (capped) {
-            break;
-        }
-        frontier = nextFrontier;
+    } catch (err) {
+        // Hand the caller the ids this walk did remove before it failed, so the
+        // budget they spent is not handed out again to whatever runs next.
+        throw withPartialResult(err, {deleted, levels, capped});
     }
     if (capped) {
         const reason = capped === 'depth' ?
@@ -211,7 +247,8 @@ const cascadeDeleteDescendants = async (target, handlers, limits = {}) => {
  * @param {Object} bounds - Work this sweep is allowed to do.
  * @param {number} bounds.budget - Maximum objects to remove.
  * @param {number} bounds.batchSize - Objects per batch between event loop yields.
- * @return {Promise<Array<string>>} Ids swept, in the order they were removed.
+ * @return {Promise<{swept: Array<string>, failed: boolean}>} Ids swept, in the order they
+ *     were removed, and whether the sweep was cut short by a database failure.
  */
 const sweepTemplateOrphans = async (target, handlers, {budget, batchSize}) => {
     const {objectId, namespace, sceneId} = target;
@@ -219,9 +256,20 @@ const sweepTemplateOrphans = async (target, handlers, {budget, batchSize}) => {
     const swept = [];
     // Only a template container id, which carries exactly one '::' pair, has
     // objects named after it; for any other id the query would match nothing.
-    if (objectId.split('::').length - 1 !== 1 || budget <= 0) {
-        return swept;
+    if (objectId.split('::').length - 1 !== 1) {
+        return {swept, failed: false};
     }
+    if (budget <= 0) {
+        // The walk spent the entire node budget, so there is none left to sweep with.
+        // Say so instead of returning as though the subtree came out clean: this is
+        // the one path on which broken-chain debris under a template container would
+        // otherwise go unmentioned, even though the caller reports no cap. Phrased as
+        // a possibility because no query was spent to find out whether any exists.
+        warn(`Sweep of template orphans under ${objectId} in ${namespace}/${sceneId} was skipped: ` +
+            `the descendant walk spent the whole node budget, so any orphans may remain`);
+        return {swept, failed: false};
+    }
+    let failed = false;
     try {
         let orphanIds = await findOrphanIds(`${objectId}::`, budget + 1);
         let capped = false;
@@ -243,9 +291,10 @@ const sweepTemplateOrphans = async (target, handlers, {budget, batchSize}) => {
                 `the remaining budget of ${budget} objects: more orphans may remain`);
         }
     } catch (err) {
+        failed = true;
         logError('Error deleting template container orphans of:', objectId, err);
     }
-    return swept;
+    return {swept, failed};
 };
 
 /**
@@ -256,6 +305,14 @@ const sweepTemplateOrphans = async (target, handlers, {budget, batchSize}) => {
  * subtree from under a live parent is worse than a delete that did not happen. Its
  * in-memory keys are kept in that case too, so a retried delete still gets through
  * the caller's persists check.
+ *
+ * The same reasoning applies to the walk and the sweep below it: a database failure
+ * in either leaves descendants in place, and deleting the root again is the only
+ * direct way to reach them, so the root's persists key is retained on those paths
+ * too and the result reports the delete as incomplete. A cap is not such a path.
+ * Caps are reached with the root's own children already gone, so a retry would find
+ * nothing to resume and the debris a cap leaves is instead picked up by the
+ * broken-chain sweep and the hourly persists refresh.
  *
  * @param {Object} target - Identity of the object to delete.
  * @param {string} target.objectId - object_id of the object to delete.
@@ -276,32 +333,49 @@ const sweepTemplateOrphans = async (target, handlers, {budget, batchSize}) => {
  * @param {number} [limits.maxNodes] - Maximum objects to remove below the root.
  * @param {number} [limits.maxDepth] - Maximum levels to walk.
  * @param {number} [limits.batchSize] - Objects per batch between event loop yields.
- * @return {Promise<{rootDeleted: boolean, deleted: Array<string>, levels: number,
- *     capped: ?string, orphans: Array<string>}>} Whether the root was deleted, and what
+ * @return {Promise<{rootDeleted: boolean, complete: boolean, deleted: Array<string>,
+ *     levels: number, capped: ?string, orphans: Array<string>}>} Whether the root was
+ *     deleted, whether every part of the delete ran without a database failure, and what
  *     the walk and the orphan sweep removed below it.
  */
 const deleteObjectAndDescendants = async (target, handlers, limits = {}) => {
-    const {objectId} = target;
-    const {deleteRoot, forget, logError = console.log} = handlers;
+    const {objectId, namespace, sceneId} = target;
+    const {deleteRoot, forget, warn = console.warn, logError = console.log} = handlers;
     const {maxNodes = MAX_CASCADE_NODES, batchSize = CASCADE_BATCH_SIZE} = limits;
     try {
         await deleteRoot();
     } catch (err) {
         logError('Error deleting object, its descendants are left in place:', objectId, err);
-        return {rootDeleted: false, deleted: [], levels: 0, capped: null, orphans: []};
+        return {rootDeleted: false, complete: false, deleted: [], levels: 0, capped: null, orphans: []};
     }
     let walk = {deleted: [], levels: 0, capped: null};
+    let walkFailed = false;
     try {
         walk = await cascadeDeleteDescendants(target, handlers, limits);
     } catch (err) {
+        // Keep whatever the walk did remove before it failed. Those ids are gone from
+        // the database, so counting them is what stops the sweep below from being
+        // handed their share of the node budget for a second time.
+        walk = (err && err.partialResult) || walk;
+        walkFailed = true;
         logError('Error deleting descendants of:', objectId, err);
     }
-    const orphans = await sweepTemplateOrphans(target, handlers, {
+    const sweep = await sweepTemplateOrphans(target, handlers, {
         budget: maxNodes - walk.deleted.length,
         batchSize,
     });
-    forget(objectId);
-    return Object.assign({rootDeleted: true, orphans}, walk);
+    const complete = !walkFailed && !sweep.failed;
+    if (complete) {
+        forget(objectId);
+    } else {
+        // The document is gone, so its TTL entry goes with it, but the persists key
+        // stays: it is the only thing that lets a retried delete of this id back in to
+        // finish removing what is still down there.
+        forget(objectId, {retainPersist: true});
+        warn(`Cascading delete of ${objectId} in ${namespace}/${sceneId} did not finish, so its ` +
+            `persists key is kept: a retried delete can still get through and resume the cleanup`);
+    }
+    return Object.assign({rootDeleted: true, complete, orphans: sweep.swept}, walk);
 };
 
 module.exports = {
