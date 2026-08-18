@@ -8,6 +8,7 @@ const mqtt = require('async-mqtt');
 const {clearIntervalAsync, setIntervalAsync} = require('set-interval-async/dynamic');
 
 const {runExpress} = require('./express_server');
+const {cascadeDeleteDescendants} = require('./cascade');
 const {asyncForEach, asyncMapForEach, filterNulls, flatten} = require('./utils');
 const {TOPICS} = require('./topics');
 
@@ -303,19 +304,17 @@ async function arenaMsgHandler(topic, message) {
                     namespace: arenaObj.namespace,
                     sceneId: arenaObj.sceneId,
                 });
-                await ArenaObject.deleteMany({
-                    'attributes.parent': arenaObj.object_id,
-                    'namespace': arenaObj.namespace,
-                    'sceneId': arenaObj.sceneId,
-                });
             } catch (err) {
                 console.log('Does not exist or already deleted:', arenaObj.object_id);
             }
+            await deleteDescendants(arenaObj);
             if (expirations.has(
                 `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
                 expirations.delete(
                     `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
             }
+            // The walk above follows parent links, so it cannot reach objects whose chain
+            // was already broken. Sweep any such orphans left inside a template instance.
             if (arenaObj.object_id.split('::').length - 1 === 1) { // Template container ID, 1 pair of '::'
                 const r = RegExp('^' + arenaObj.object_id + '::');
                 try {
@@ -340,6 +339,48 @@ async function arenaMsgHandler(topic, message) {
         break;
     default:
         // pass
+    }
+}
+
+/**
+ * Removes every descendant of an object that has just been deleted, at any depth,
+ * from the database and from the in-memory persists set.
+ *
+ * Only the database work is done here: clients drop objects orphaned by a deleted
+ * parent themselves, so no delete is published for the descendants. The walk is
+ * bounded and yields between batches, see cascade.js.
+ * @param {object} arenaObj - The object that was just deleted, following ArenaObject schema
+ * @return {Promise<void>}
+ */
+async function deleteDescendants(arenaObj) {
+    const scope = {namespace: arenaObj.namespace, sceneId: arenaObj.sceneId};
+    try {
+        await cascadeDeleteDescendants({
+            objectId: arenaObj.object_id,
+            namespace: arenaObj.namespace,
+            sceneId: arenaObj.sceneId,
+        }, {
+            findChildIds: async (parentIds) => {
+                const children = await ArenaObject.find({
+                    'attributes.parent': {$in: parentIds},
+                    'namespace': scope.namespace,
+                    'sceneId': scope.sceneId,
+                }, {object_id: 1, _id: 0});
+                return children.map((child) => child.object_id);
+            },
+            deleteIds: async (objectIds) => {
+                await ArenaObject.deleteMany({
+                    'object_id': {$in: objectIds},
+                    'namespace': scope.namespace,
+                    'sceneId': scope.sceneId,
+                });
+            },
+            forget: (objectId) => {
+                persists.delete(`${scope.namespace}|${scope.sceneId}|${objectId}`);
+            },
+        });
+    } catch (err) {
+        console.log('Error deleting descendants of:', arenaObj.object_id, err);
     }
 }
 

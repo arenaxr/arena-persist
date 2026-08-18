@@ -40,6 +40,7 @@ graph TD
 |------|------|-------------|
 | [server.js](server.js) | Main entry: MQTT client, Mongoose schema, message routing | `arenaMsgHandler`, `handleGetPersist`, `handleLoadTemplate`, `createArenaObj`, `loadTemplate`, `publishExpires`, `runMQTT`, `updatePersists` |
 | [express_server.js](express_server.js) | REST API with JWT auth middleware | `runExpress`, `checkJWTSubs`, `checkJWTPubs`, `matchJWT`, `checkTokenRights` |
+| [cascade.js](cascade.js) | Bounded breadth-first descendant delete walk | `cascadeDeleteDescendants`, `MAX_CASCADE_NODES`, `MAX_CASCADE_DEPTH` |
 | [topics.js](topics.js) | MQTT topic patterns and parsing | `TOPICS` |
 | [utils.js](utils.js) | Utility functions | `asyncForEach`, `asyncMapForEach`, `filterNulls`, `flatten` |
 | [config.json](config.json) | Configuration (MongoDB URI, MQTT settings) | `mongodb.uri`, `mqtt.uri` |
@@ -56,6 +57,7 @@ graph TD
 | REQ-PS-004 | Full data replacement on `update` with `overwrite: true` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-005 | Skip persistence on `update` with explicit `persist: false` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-006 | Delete object on `action: delete` | [server.js#arenaMsgHandler](server.js) |
+| REQ-PS-007 | Delete all descendants of a deleted object, at any depth, bounded by `MAX_CASCADE_NODES` and `MAX_CASCADE_DEPTH` | [cascade.js#cascadeDeleteDescendants](cascade.js) |
 
 ### TTL (Time-to-Live)
 
