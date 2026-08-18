@@ -177,10 +177,12 @@ const startServer = async () => {
     // the expiry pass is.
     const realSetTimeout = global.setTimeout;
     let hourlyRefresh;
+    let hourlyScheduleCount = 0;
     const catchHourlyTimer = () => {
         global.setTimeout = (fn, ms, ...rest) => {
             if (ms === 60 * 60 * 1000) {
                 hourlyRefresh = fn;
+                hourlyScheduleCount++;
                 const idle = realSetTimeout(() => {}, 1);
                 idle.unref();
                 return idle;
@@ -217,6 +219,10 @@ const startServer = async () => {
         publishExpires: intervals[0].fn,
         published,
         onMessage: events.message,
+        // How many times the hourly refresh has been scheduled, startup included. Stepping the
+        // refresh by hand cannot show that it rescheduled itself — the captured callback is still
+        // callable either way — so the count is what the tests assert on.
+        hourlySchedules: () => hourlyScheduleCount,
         // Runs the hourly refresh, holding its rescheduling of itself back the same way startup
         // does so the run does not leave an hour-long timer behind.
         refreshPersists: async () => {
@@ -993,6 +999,23 @@ describe('MQTT connection events', () => {
         assert.equal(harness.intervals[harness.intervals.length - 1].ms, 1000);
     });
 
+    it('logs a failed resync on reconnect and still restarts the expiry pass', async () => {
+        const harness = await service();
+        const timersBefore = harness.intervals.length;
+        const recorded = harness.ArenaObject.find;
+        harness.ArenaObject.find = () => Promise.reject(new Error('mongo unavailable'));
+        try {
+            // An unhandled rejection out of this bare async handler would end the process.
+            await assert.doesNotReject(harness.events.reconnect());
+        } finally {
+            harness.ArenaObject.find = recorded;
+        }
+        assert.ok(logs.log.some((line) => line.includes('mongo unavailable')),
+            'the failure is logged rather than thrown');
+        assert.equal(harness.intervals.length, timersBefore + 1,
+            'and the expiry timer is restarted anyway');
+    });
+
     it('refills the set the express server holds when it resyncs, rather than replacing it', async () => {
         const harness = await service();
         db.findRows.push([]);
@@ -1070,9 +1093,11 @@ describe('persists set ownership', () => {
 
     it('reschedules the refresh each time it runs', async () => {
         const harness = await service();
+        const scheduledBefore = harness.hourlySchedules();
         await harness.refreshPersists();
         await harness.refreshPersists();
-        assert.equal(db.of('find').length, 2, 'the second run happened, so the first rescheduled it');
+        assert.equal(db.of('find').length, 2, 'both runs read the keys back');
+        assert.equal(harness.hourlySchedules(), scheduledBefore + 2, 'and each one scheduled the next');
     });
 
     it('still lets a scene delete prune the keys the message handler checks, after a refresh', async () => {
@@ -1101,6 +1126,22 @@ describe('persists set ownership', () => {
             releaseQuery = () => resolve([{namespace: NAMESPACE, sceneId: SCENE, object_id: 'box-1'}]);
         });
         harness.ArenaObject.find = () => rows;
+        // The refill has no observable moment to poke from outside while it is correct: it runs in
+        // one turn, so nothing can be scheduled inside it. What can be observed is the first
+        // moment after the clear at which anything else could run at all. A microtask queued as
+        // the set is cleared runs after the whole synchronous clear-and-refill, and so sees the
+        // refilled set; if any await slips between the clear and the refill, that same microtask
+        // runs in the gap instead and sees the set empty.
+        const realClear = harness.persists.clear.bind(harness.persists);
+        let sizeOnNextMicrotask = null;
+        harness.persists.clear = () => {
+            realClear();
+            queueMicrotask(() => {
+                if (sizeOnNextMicrotask === null) {
+                    sizeOnNextMicrotask = harness.persists.size;
+                }
+            });
+        };
         try {
             const refreshing = harness.refreshPersists();
             assert.ok(harness.persists.has(key('box-1')),
@@ -1112,8 +1153,59 @@ describe('persists set ownership', () => {
             await refreshing;
         } finally {
             harness.ArenaObject.find = recorded;
+            delete harness.persists.clear;
         }
+        assert.equal(sizeOnNextMicrotask, 1,
+            'the refill left nothing for the first microtask after the clear to see empty');
         assert.deepEqual([...harness.persists], [key('box-1')],
             'and the key is still there once the refresh completes');
+    });
+
+    it('keeps an object created while the refresh query was in flight', async () => {
+        const harness = await service();
+        await deliver(harness, objectTopic('box-1'), create('box-1'));
+        const recorded = harness.ArenaObject.find;
+        let releaseQuery;
+        const rows = new Promise((resolve) => {
+            releaseQuery = () => resolve([{namespace: NAMESPACE, sceneId: SCENE, object_id: 'box-1'}]);
+        });
+        harness.ArenaObject.find = () => rows;
+        try {
+            const refreshing = harness.refreshPersists();
+            // Created after the query was issued, so the rows it resolves with cannot carry it.
+            await deliver(harness, objectTopic('box-2'), create('box-2'));
+            releaseQuery();
+            await refreshing;
+        } finally {
+            harness.ArenaObject.find = recorded;
+        }
+        assert.deepEqual([...harness.persists].sort(), [key('box-1'), key('box-2')],
+            'the refresh keeps the key the handler added while its query was in flight');
+        db.reset();
+        await deliver(harness, objectTopic('box-2'), update('box-2'));
+        assert.equal(db.of('findOneAndUpdate').length, 1,
+            'so a later update for that object is still applied, not silently dropped');
+    });
+
+    it('reschedules the refresh even when its query is rejected', async () => {
+        const harness = await service();
+        const scheduledBefore = harness.hourlySchedules();
+        const recorded = harness.ArenaObject.find;
+        harness.ArenaObject.find = () => Promise.reject(new Error('mongo unavailable'));
+        try {
+            // The refresh runs as a bare setTimeout callback, so a rejection escaping it is an
+            // unhandled rejection that ends the process.
+            await assert.doesNotReject(harness.refreshPersists());
+        } finally {
+            harness.ArenaObject.find = recorded;
+        }
+        assert.equal(harness.hourlySchedules(), scheduledBefore + 1,
+            'a failed refresh still schedules the next one, so one bad query is not the last');
+        assert.ok(logs.log.some((line) => line.includes('mongo unavailable')),
+            'and the failure is logged');
+        db.findRows.push([{namespace: NAMESPACE, sceneId: SCENE, object_id: 'box-1'}]);
+        await harness.refreshPersists();
+        assert.deepEqual([...harness.persists], [key('box-1')],
+            'and the refresh that follows works normally');
     });
 });

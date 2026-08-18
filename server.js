@@ -52,41 +52,93 @@ let mqttClientOptions;
 // object and keep their own reference to it, so it is refilled in place on every resync
 // rather than replaced: rebinding it here would leave them working on an abandoned copy.
 const persists = new Set();
+// Keys the message handler persisted while a resync query was in flight. That query's result
+// predates those creates, so refilling from it alone would drop them; resyncPersists() unions
+// this set back in after the refill. Emptied when the first resync of a window starts.
+const persistsAddedDuringResync = new Set();
+let resyncsInFlight = 0;
 let expirations;
 let expireTimer;
 let persistUpdateTimeout;
 
 /**
+ * Records a key in the persists set, keeping it through a resync that is already in flight.
+ * @param {string} key - namespace|sceneId|object_id of the object that is now persisted.
+ */
+function rememberPersist(key) {
+    persists.add(key);
+    if (resyncsInFlight > 0) {
+        persistsAddedDuringResync.add(key);
+    }
+}
+
+/**
  * Refills the persists set from the database, keeping the same set object.
  *
- * Every key is read before anything is dropped, and the clear-and-refill that follows runs
- * to completion without awaiting, so no message handler can observe the set empty or
- * half-filled: it sees either the previous contents or the refreshed ones.
+ * Two things are guaranteed, and one deliberately is not:
+ *
+ * - No handler observes the set empty or half-filled. Every key is read before anything is
+ *   dropped, and the clear-and-refill that follows runs to completion in a single turn with no
+ *   await in it, so a handler scheduled around it sees either the whole previous contents or the
+ *   whole refreshed ones. Nothing may be awaited between the clear and the end of the refill.
+ * - A key the handler persisted while the query was in flight survives the refill, because the
+ *   query result predates that create and so does not carry it. Refilling from the query result
+ *   alone would drop it, and the object would stay invisible to the handler until the next
+ *   refresh: an hour of its updates discarded and a delete for it ignored entirely.
+ * - A key *removed* while the query was in flight is not guaranteed to stay removed: the result
+ *   still lists the object, so the refill puts it back. What follows is bounded and quiet rather
+ *   than lossy — an update for it is written against a document that is already gone and changes
+ *   nothing, a delete for it walks a cascade over nothing — and the next refresh drops the key.
+ *   So this is not the same hazard as losing a key, and closing it would mean intercepting every
+ *   removal site, in express_server.js and cascade.js as well as here.
  * @return {Promise<void>}
  */
 async function resyncPersists() {
-    const keys = (await ArenaObject.find({}, {
-        'object_id': 1,
-        'namespace': 1,
-        'sceneId': 1,
-        '_id': 0,
-    })).map((o) => `${o.namespace}|${o.sceneId}|${o.object_id}`);
+    if (resyncsInFlight === 0) {
+        // Start of a fresh window. Anything left from an earlier one, including from a resync
+        // whose query was rejected, is already in persists and must not be unioned in again.
+        persistsAddedDuringResync.clear();
+    }
+    resyncsInFlight++;
+    let keys;
+    try {
+        keys = (await ArenaObject.find({}, {
+            'object_id': 1,
+            'namespace': 1,
+            'sceneId': 1,
+            '_id': 0,
+        })).map((o) => `${o.namespace}|${o.sceneId}|${o.object_id}`);
+    } finally {
+        resyncsInFlight--;
+    }
     persists.clear();
     for (const key of keys) {
+        persists.add(key);
+    }
+    for (const key of persistsAddedDuringResync) {
         persists.add(key);
     }
 }
 
 /**
  * Force refresh of the persists set every hour
+ *
+ * The reschedule is in a finally: this runs as a bare setTimeout callback, so a rejection here
+ * is an unhandled rejection that ends the process, and a reschedule reached only on success
+ * would let one failed query stop every later refresh.
  * @return {Promise<void>}
  */
 async function updatePersists() {
     if (persistUpdateTimeout) {
         clearTimeout(persistUpdateTimeout);
     }
-    await resyncPersists();
-    persistUpdateTimeout = setTimeout(updatePersists, 60 * 60 * 1000);
+    try {
+        await resyncPersists();
+    } catch (err) {
+        console.log('Error refreshing persists: ', err);
+    } finally {
+        persistUpdateTimeout = setTimeout(updatePersists, 60 * 60 * 1000);
+    }
 }
 
 mongoose.connect(config.mongodb.uri).then(async () => {
@@ -151,8 +203,14 @@ async function runMQTT() {
     });
     mqttClient.on('reconnect', async () => {
         console.log('reconnect');
-        // Resync
-        await resyncPersists();
+        // Resync. A rejection must not escape: this is a bare async event handler, so it would
+        // be an unhandled rejection that ends the process, and the expiry pass below still has
+        // to be restarted whether or not the keys could be read back.
+        try {
+            await resyncPersists();
+        } catch (err) {
+            console.log('Error resyncing persists on reconnect: ', err);
+        }
         if (expireTimer) {
             await clearIntervalAsync(expireTimer);
         }
@@ -263,7 +321,7 @@ async function arenaMsgHandler(topic, message) {
                     `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
                     arenaObj);
             }
-            persists.add(
+            rememberPersist(
                 `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
         }
         break;
