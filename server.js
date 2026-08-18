@@ -429,9 +429,9 @@ async function handleLoadTemplate(arenaObj) {
     }
     await loadTemplate(
         a.instanceId,
+        arenaObj.realm,
         a.templateNamespace,
         a.templateSceneId,
-        arenaObj.realm,
         arenaObj.namespace,
         arenaObj.sceneId,
         opts,
@@ -514,6 +514,9 @@ const createArenaObj = async (
  * @param {Number} [opts.ttl] - Duration TTL (seconds) of Template container
  * @param {boolean} [opts.persist] - Whether to persist *all* templated objects
  * @param {Object} [opts.attributes] - data payload Template container
+ * @param {Object} [opts.pose] - Where to place the Template container
+ * @param {Object} [opts.pose.position] - position of the Template container
+ * @param {Object} [opts.pose.rotation] - rotation of the Template container
  */
 const loadTemplate = async (
     instanceId,
@@ -538,6 +541,14 @@ const loadTemplate = async (
         },
     };
     const options = Object.assign(defaultOpts, opts);
+    // A requested pose places the container, one component at a time, so a request carrying only
+    // a position keeps the default rotation.
+    const {position, rotation} = options.pose ?? {};
+    options.attributes = {
+        ...options.attributes,
+        ...(position ? {position} : {}),
+        ...(rotation ? {rotation} : {}),
+    };
     const templatePrefix = `${templateNamespace}|${templateSceneId}::${instanceId}`;
     // Create template container, always
     if (!options.noParent) {

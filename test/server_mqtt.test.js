@@ -891,11 +891,7 @@ describe('arenaMsgHandler loadTemplate', () => {
             'and the template object hangs off the container');
     });
 
-    // Characterization, not endorsement: the pose of the request is passed down as an opts.pose
-    // option, but loadTemplate reads the container attributes from opts.attributes, so the pose is
-    // dropped and every instance is placed at the origin with no rotation. Pinned as current
-    // behaviour; wiring the pose through is a separate change.
-    it('places the container at the origin, ignoring the position and rotation requested', async () => {
+    it('places the container at the position and rotation requested', async () => {
         const harness = await service();
         db.counts.push(3);
         db.counts.push(0);
@@ -906,35 +902,72 @@ describe('arenaMsgHandler loadTemplate', () => {
         }));
         const [, container] = db.of('findOneAndUpdate')[0];
         assert.deepEqual(container.attributes, {
-            position: {x: 0, y: 0, z: 0},
-            rotation: {x: 0, y: 0, z: 0},
+            position: {x: 1, y: 2, z: 3},
+            rotation: {x: 0, y: 90, z: 0},
             object_type: 'templateContainer',
         });
     });
 
-    // Characterization, not endorsement: the arguments are passed to loadTemplate in the wrong
-    // order here, so its realm, templateNamespace and templateSceneId parameters receive the
-    // template namespace, the template scene and the requesting realm respectively. Three things
-    // follow, all pinned below: the template is looked for under the template scene name as a
-    // namespace and the realm as a scene, the created objects are stamped with the template
-    // namespace as their realm, and the instance ids are built from the swapped pair, so they do
-    // not match the id the already-exists guard above checks. The target scene is unaffected,
-    // which is why the fault is not obvious. Correcting the call is a separate change.
-    it('looks the template up under swapped namespace and scene, and names the instance from them',
+    it('falls back to the default pose for whatever the request leaves out', async () => {
+        const harness = await service();
+        db.counts.push(3);
+        db.counts.push(0);
+        db.findRows.push([]);
+        await deliver(harness, objectTopic('req-1'), request());
+        assert.deepEqual(db.of('findOneAndUpdate')[0][1].attributes, {
+            position: {x: 0, y: 0, z: 0},
+            rotation: {x: 0, y: 0, z: 0},
+            object_type: 'templateContainer',
+        }, 'a request with no pose at all leaves the container at the origin');
+        db.reset();
+        harness.published.length = 0;
+        db.counts.push(3);
+        db.counts.push(0);
+        db.findRows.push([]);
+        await deliver(harness, objectTopic('req-1'), request({position: {x: 1, y: 2, z: 3}}));
+        assert.deepEqual(db.of('findOneAndUpdate')[0][1].attributes, {
+            position: {x: 1, y: 2, z: 3},
+            rotation: {x: 0, y: 0, z: 0},
+            object_type: 'templateContainer',
+        }, 'and a request with only a position keeps the default rotation');
+    });
+
+    it('reads the template from the namespace and scene the request names, and names the instance from them',
         async () => {
             const harness = await service();
             db.counts.push(3);
             db.counts.push(0);
             db.findRows.push([{object_id: 'shelf-1', type: 'object', attributes: {}}]);
             await deliver(harness, objectTopic('req-1'), request());
-            assert.deepEqual(db.of('find')[0], [{namespace: 'store', sceneId: REALM}],
-                'the template scene id is used as a namespace and the realm as a scene id');
+            assert.deepEqual(db.of('find')[0], [{namespace: 'public', sceneId: 'store'}],
+                'the template namespace and scene id are used as they were given');
             const [, container] = db.of('findOneAndUpdate')[0];
-            assert.equal(container.realm, 'public', 'the template namespace ends up in the realm field');
+            assert.equal(container.realm, REALM, 'the objects are stamped with the requesting realm');
             assert.deepEqual(db.of('findOneAndUpdate').map(([, doc]) => doc.object_id),
-                ['store|realm::shelf', 'store|realm::shelf::shelf-1'],
-                'and the created ids differ from the public|store::shelf the guard looked for');
+                ['public|store::shelf', 'public|store::shelf::shelf-1'],
+                'and every created id carries the template and instance prefix');
         });
+
+    it('refuses to instantiate the same template into the same scene twice', async () => {
+        const harness = await service();
+        db.counts.push(3); // the template is not empty
+        db.counts.push(0); // and nothing of this instance is in the target scene yet
+        db.findRows.push([{object_id: 'shelf-1', type: 'object', attributes: {}}]);
+        await deliver(harness, objectTopic('req-1'), request());
+        const [, container] = db.of('findOneAndUpdate')[0];
+        db.reset();
+        harness.published.length = 0;
+        db.counts.push(3); // the template is still there
+        db.counts.push(1); // and so is the instance the first request created
+        await deliver(harness, objectTopic('req-1'), request());
+        assert.deepEqual(db.of('countDocuments')[1], [{
+            namespace: NAMESPACE,
+            sceneId: SCENE,
+            object_id: container.object_id,
+        }], 'the guard looks for exactly the container id the first instantiation created');
+        assert.equal(db.of('findOneAndUpdate').length, 0, 'so the second request writes nothing');
+        assert.deepEqual(harness.published, [], 'and announces nothing');
+    });
 
     it('skips the emptiness check when the request names no template scene', async () => {
         const harness = await service();
