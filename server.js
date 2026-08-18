@@ -364,16 +364,26 @@ async function arenaMsgHandler(topic, message) {
                     upsert: true,
                     runValidators: true,
                 });
+                // Bookkeeping only once the write has resolved. A key recorded for an
+                // object that was never stored gets later updates for it past the
+                // persists check below, where they are applied to a document that does
+                // not exist and are silently lost.
+                if (arenaObj.expireAt) {
+                    expirations.set(
+                        `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
+                        arenaObj);
+                }
+                rememberPersist(
+                    `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
             } catch (err) {
+                // A failed create is logged and nothing else, as before. Any key this
+                // object already had is deliberately left in place: the create may have
+                // failed for an object that is genuinely persisted, and dropping its key
+                // would start discarding valid updates for it. Nothing is rethrown
+                // either, since this handler is called by the MQTT client with no caller
+                // to catch it.
                 console.log('Error creating object: ', arenaObj.object_id, err);
             }
-            if (arenaObj.expireAt) {
-                expirations.set(
-                    `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
-                    arenaObj);
-            }
-            rememberPersist(
-                `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`);
         }
         break;
     case 'update':

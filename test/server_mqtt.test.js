@@ -439,15 +439,53 @@ describe('arenaMsgHandler create', () => {
         assert.deepEqual(expired, ['ephemeral'], 'only the object whose deadline passed is expired');
     });
 
-    // Characterization, not endorsement: the in-memory key is added after the upsert, outside its
-    // try block, so an object whose write failed is still remembered as persisted. A later update
-    // for it then passes the persists check and is applied to a document that does not exist.
-    it('still remembers the key when the upsert itself fails', async () => {
+    it('does not remember the key when the upsert itself fails', async () => {
         const harness = await service();
         db.failures.findOneAndUpdate = new Error('not primary');
         await deliver(harness, objectTopic('box-1'), box({persist: true}));
-        assert.deepEqual([...harness.persists], [key('box-1')]);
+        assert.deepEqual([...harness.persists], [], 'an object that was never stored is not persisted');
         assert.equal(logs.log.filter((line) => line.startsWith('Error creating object')).length, 1);
+    });
+
+    it('ignores a later update for an object whose create failed', async () => {
+        const harness = await service();
+        db.failures.findOneAndUpdate = new Error('not primary');
+        await deliver(harness, objectTopic('box-1'), box({persist: true}));
+        assert.equal(db.of('findOneAndUpdate').length, 1, 'only the create was attempted');
+        delete db.failures.findOneAndUpdate;
+        await deliver(harness, objectTopic('box-1'), {
+            object_id: 'box-1', action: 'update', type: 'object', persist: true,
+            data: {material: {color: '#ff0000'}},
+        });
+        assert.equal(db.of('findOneAndUpdate').length, 1, 'the update is dropped, not applied to a missing document');
+        assert.deepEqual([...harness.persists], []);
+    });
+
+    it('applies a later update for an object whose create succeeded', async () => {
+        const harness = await service();
+        await deliver(harness, objectTopic('box-1'), box({persist: true}));
+        assert.deepEqual([...harness.persists], [key('box-1')]);
+        await deliver(harness, objectTopic('box-1'), {
+            object_id: 'box-1', action: 'update', type: 'object', persist: true,
+            data: {material: {color: '#ff0000'}},
+        });
+        const [filter, mutation] = db.of('findOneAndUpdate')[1];
+        assert.deepEqual(filter, {object_id: 'box-1', namespace: NAMESPACE, sceneId: SCENE});
+        assert.deepEqual(mutation, {$set: {'attributes.material.color': '#ff0000'}, $unset: {}});
+    });
+
+    it('does not track a ttl object for expiry when its create fails, and does when it succeeds', async () => {
+        const harness = await service();
+        db.failures.findOneAndUpdate = new Error('not primary');
+        await deliver(harness, objectTopic('lost'), box({object_id: 'lost', persist: true, ttl: -1}));
+        delete db.failures.findOneAndUpdate;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published, [], 'an object that was never stored is never expired');
+
+        await deliver(harness, objectTopic('kept'), box({object_id: 'kept', persist: true, ttl: -1}));
+        await harness.publishExpires();
+        const expired = harness.published.map(({payload}) => JSON.parse(payload).object_id);
+        assert.deepEqual(expired, ['kept'], 'only the object whose write resolved is tracked for expiry');
     });
 });
 
