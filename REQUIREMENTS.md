@@ -52,13 +52,14 @@ graph TD
 | ID | Requirement | Source |
 |----|-------------|--------|
 | REQ-PS-001 | Save objects with `action: create` + `persist: true` to MongoDB | [server.js#arenaMsgHandler](server.js) |
-| REQ-PS-002 | Replace existing object entirely on re-create | [server.js#arenaMsgHandler](server.js) |
+| REQ-PS-002 | Replace a stored object's `data` in entirety on re-create, while the fields the message does not carry - `expireAt`, `private`, `program_id`, `createdAt` - survive, the upsert being cast to `$set` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-003 | Merge `data` properties on `action: update` + `persist: true` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-004 | Full data replacement on `update` with `overwrite: true` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-005 | Skip persistence on `update` with explicit `persist: false` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-006 | Delete object on `action: delete` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-007 | Delete all descendants of a deleted object, at any depth, bounded by `MAX_CASCADE_NODES` and `MAX_CASCADE_DEPTH` | [cascade.js#cascadeDeleteDescendants](cascade.js) |
 | REQ-PS-008 | Keep a deleted object's `persists` key when its descendant delete could not finish, so a retried `delete` resumes the cleanup | [cascade.js#deleteObjectAndDescendants](cascade.js) |
+| REQ-PS-009 | Record a created object's `persists` key only once its write resolved, or once the document has been read back after a rejected write, and never drop a key the object already had | [server.js#arenaMsgHandler](server.js) |
 
 ### TTL (Time-to-Live)
 
@@ -67,6 +68,7 @@ graph TD
 | REQ-PS-010 | Objects with `ttl` (float seconds) auto-expire after set duration | [server.js#publishExpires](server.js) |
 | REQ-PS-011 | Publish `delete` action over MQTT on TTL expiry | [server.js#publishExpires](server.js) |
 | REQ-PS-012 | `ttl` implies `persist: true` | [server.js#arenaMsgHandler](server.js) |
+| REQ-PS-013 | Track an object for expiry only from a deadline the database holds: the one just written, or the stored one after a rejected write, never a failed message's own | [server.js#arenaMsgHandler](server.js) |
 
 ### Templates / Cloning
 
