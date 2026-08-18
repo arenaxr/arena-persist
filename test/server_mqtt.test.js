@@ -715,7 +715,10 @@ describe('publishExpires', () => {
 });
 
 describe('loadTemplate', () => {
-    const TEMPLATE_NS = 'public';
+    // Deliberately not the target namespace below: the template namespace and the target namespace
+    // are two different positional arguments, and a fixture using one value for both cannot tell
+    // them apart.
+    const TEMPLATE_NS = 'templates';
     const TEMPLATE_SCENE = 'store';
     const INSTANCE = 'shelf';
     const PREFIX = `${TEMPLATE_NS}|${TEMPLATE_SCENE}::${INSTANCE}`;
@@ -842,6 +845,12 @@ describe('loadTemplate', () => {
 });
 
 describe('arenaMsgHandler loadTemplate', () => {
+    // templateNamespace is deliberately not NAMESPACE, the namespace the request itself arrives
+    // in: the two are separate arguments to loadTemplate and a fixture reusing one value for both
+    // cannot catch them being swapped.
+    const TEMPLATE_NS = 'templates';
+    const PREFIX = `${TEMPLATE_NS}|store::shelf`;
+
     /**
      * A loadTemplate request as a client sends it.
      * @param {Object} [attributes] - Request attributes to add or replace.
@@ -851,7 +860,12 @@ describe('arenaMsgHandler loadTemplate', () => {
         object_id: 'req-1',
         action: 'loadTemplate',
         type: 'object',
-        data: {templateNamespace: 'public', templateSceneId: 'store', instanceId: 'shelf', ...attributes},
+        data: {
+            templateNamespace: TEMPLATE_NS,
+            templateSceneId: 'store',
+            instanceId: 'shelf',
+            ...attributes,
+        },
     });
 
     it('does nothing when the template scene is empty', async () => {
@@ -870,7 +884,7 @@ describe('arenaMsgHandler loadTemplate', () => {
         assert.deepEqual(db.of('countDocuments')[1], [{
             namespace: NAMESPACE,
             sceneId: SCENE,
-            object_id: 'public|store::shelf',
+            object_id: PREFIX,
         }]);
         assert.equal(db.of('findOneAndUpdate').length, 0);
     });
@@ -891,45 +905,95 @@ describe('arenaMsgHandler loadTemplate', () => {
             'and the template object hangs off the container');
     });
 
-    it('places the container at the position and rotation requested', async () => {
-        const harness = await service();
+    it('places the container at the position and rotation requested, and only the container',
+        async () => {
+            const harness = await service();
+            db.counts.push(3);
+            db.counts.push(0);
+            db.findRows.push([
+                {object_id: 'shelf-1', type: 'object', attributes: {}},
+                {object_id: 'can-1', type: 'object', attributes: {position: {x: 9, y: 9, z: 9}}},
+            ]);
+            await deliver(harness, objectTopic('req-1'), request({
+                position: {x: 1, y: 2, z: 3},
+                rotation: {x: 0, y: 90, z: 0},
+            }));
+            const [container, child, posedChild] = db.of('findOneAndUpdate').map(([, doc]) => doc);
+            assert.deepEqual(container.attributes, {
+                position: {x: 1, y: 2, z: 3},
+                rotation: {x: 0, y: 90, z: 0},
+                object_type: 'templateContainer',
+            });
+            // The pose places the container; the children are positioned relative to it, so a pose
+            // pushed onto them as well would move each one twice.
+            assert.deepEqual(child.attributes, {parent: PREFIX},
+                'a child of the container gains nothing but its parent link');
+            assert.deepEqual(posedChild.attributes, {position: {x: 9, y: 9, z: 9}, parent: PREFIX},
+                'and a child with a position of its own keeps it');
+        });
+
+    /**
+     * Instantiates a template with one requested pose and returns the container's attributes.
+     * @param {Object} harness - The harness from service().
+     * @param {Object} [attributes] - Request attributes carrying the pose.
+     * @return {Promise<Object>} The attributes the container was created with.
+     */
+    const containerFor = async (harness, attributes) => {
+        db.reset();
+        harness.published.length = 0;
+        logs.log.length = 0;
         db.counts.push(3);
         db.counts.push(0);
         db.findRows.push([]);
-        await deliver(harness, objectTopic('req-1'), request({
-            position: {x: 1, y: 2, z: 3},
-            rotation: {x: 0, y: 90, z: 0},
-        }));
-        const [, container] = db.of('findOneAndUpdate')[0];
-        assert.deepEqual(container.attributes, {
-            position: {x: 1, y: 2, z: 3},
-            rotation: {x: 0, y: 90, z: 0},
-            object_type: 'templateContainer',
-        });
-    });
+        await deliver(harness, objectTopic('req-1'), request(attributes));
+        return db.of('findOneAndUpdate')[0][1].attributes;
+    };
 
     it('falls back to the default pose for whatever the request leaves out', async () => {
         const harness = await service();
-        db.counts.push(3);
-        db.counts.push(0);
-        db.findRows.push([]);
-        await deliver(harness, objectTopic('req-1'), request());
-        assert.deepEqual(db.of('findOneAndUpdate')[0][1].attributes, {
+        assert.deepEqual(await containerFor(harness), {
             position: {x: 0, y: 0, z: 0},
             rotation: {x: 0, y: 0, z: 0},
             object_type: 'templateContainer',
         }, 'a request with no pose at all leaves the container at the origin');
-        db.reset();
-        harness.published.length = 0;
-        db.counts.push(3);
-        db.counts.push(0);
-        db.findRows.push([]);
-        await deliver(harness, objectTopic('req-1'), request({position: {x: 1, y: 2, z: 3}}));
-        assert.deepEqual(db.of('findOneAndUpdate')[0][1].attributes, {
+        assert.deepEqual(await containerFor(harness, {position: {x: 1, y: 2, z: 3}}), {
             position: {x: 1, y: 2, z: 3},
             rotation: {x: 0, y: 0, z: 0},
             object_type: 'templateContainer',
         }, 'and a request with only a position keeps the default rotation');
+    });
+
+    it('fills in the axes a partial pose leaves out, rather than dropping the default', async () => {
+        const harness = await service();
+        assert.deepEqual((await containerFor(harness, {position: {}})).position, {x: 0, y: 0, z: 0},
+            'an empty position is the origin, not a container with nowhere to be');
+        assert.deepEqual((await containerFor(harness, {position: {x: 1}})).position, {x: 1, y: 0, z: 0},
+            'and one named axis keeps the default for the two it does not name');
+        assert.deepEqual((await containerFor(harness, {rotation: {y: 90}})).rotation, {x: 0, y: 90, z: 0},
+            'the same holds for rotation');
+        assert.deepEqual((await containerFor(harness, {position: {x: 1}})).rotation, {x: 0, y: 0, z: 0},
+            'and a partial position still leaves the rotation alone');
+    });
+
+    it('ignores a pose component it cannot place an object with, and says so', async () => {
+        const harness = await service();
+        const origin = {x: 0, y: 0, z: 0};
+        // attributes is Mixed in the schema and createArenaObj runs no validators, so without this
+        // any of these would reach both Mongo and the broker verbatim.
+        for (const position of ['nope', 42, true, [1, 2, 3], {x: 'a', y: 'b', z: 'c'},
+            {x: NaN, y: 0, z: 0}, {x: Infinity, y: 0, z: 0}, {x: null, y: 0, z: 0},
+            {x: {y: 1}, y: 0, z: 0}]) {
+            const attributes = await containerFor(harness, {position});
+            assert.deepEqual(attributes.position, origin,
+                `${JSON.stringify(position)} leaves the container at the origin`);
+            assert.ok(logs.log.some((line) => line.includes('Ignoring template container position')),
+                `${JSON.stringify(position)} is logged rather than silently dropped`);
+        }
+        assert.deepEqual((await containerFor(harness, {position: {x: 1, y: 'two', z: 3}})).position,
+            {x: 1, y: 0, z: 3}, 'a single unusable axis costs only that axis');
+        assert.deepEqual((await containerFor(harness, {position: null})).position, origin,
+            'and an explicit null is just an absent position, so it is not worth a log');
+        assert.deepEqual(logs.log.filter((line) => line.includes('Ignoring template container')), []);
     });
 
     it('reads the template from the namespace and scene the request names, and names the instance from them',
@@ -939,12 +1003,16 @@ describe('arenaMsgHandler loadTemplate', () => {
             db.counts.push(0);
             db.findRows.push([{object_id: 'shelf-1', type: 'object', attributes: {}}]);
             await deliver(harness, objectTopic('req-1'), request());
-            assert.deepEqual(db.of('find')[0], [{namespace: 'public', sceneId: 'store'}],
-                'the template namespace and scene id are used as they were given');
+            assert.deepEqual(db.of('find')[0], [{namespace: TEMPLATE_NS, sceneId: 'store'}],
+                'the template namespace and scene id are used as they were given, not the target ones');
             const [, container] = db.of('findOneAndUpdate')[0];
             assert.equal(container.realm, REALM, 'the objects are stamped with the requesting realm');
+            for (const [filter] of db.of('findOneAndUpdate')) {
+                assert.equal(filter.namespace, NAMESPACE, 'while the writes go to the target namespace');
+                assert.equal(filter.sceneId, SCENE);
+            }
             assert.deepEqual(db.of('findOneAndUpdate').map(([, doc]) => doc.object_id),
-                ['public|store::shelf', 'public|store::shelf::shelf-1'],
+                [PREFIX, `${PREFIX}::shelf-1`],
                 'and every created id carries the template and instance prefix');
         });
 
@@ -969,13 +1037,33 @@ describe('arenaMsgHandler loadTemplate', () => {
         assert.deepEqual(harness.published, [], 'and announces nothing');
     });
 
-    it('skips the emptiness check when the request names no template scene', async () => {
-        const harness = await service();
-        db.counts.push(0); // would be the instance check, since the template check is skipped
-        await deliver(harness, objectTopic('req-1'), request({templateNamespace: undefined}));
-        assert.deepEqual(db.of('countDocuments').length, 1);
-        assert.deepEqual(db.of('countDocuments')[0][0].object_id, 'undefined|store::shelf');
-    });
+    // Both halves of the template's address are required. Until the emptiness check was made to
+    // require both, a request naming only one fell straight through to loadTemplate, where mongoose
+    // drops the undefined key from the filter: the lookup widened to every object sharing the half
+    // that was given - or, with neither given, to the whole collection - and every one of them was
+    // cloned into the requesting scene and announced on the broker.
+    for (const [description, missing] of [
+        ['no template namespace', {templateNamespace: undefined}],
+        ['no template scene', {templateSceneId: undefined}],
+        ['neither a template namespace nor a template scene',
+            {templateNamespace: undefined, templateSceneId: undefined}],
+        ['an empty template namespace', {templateNamespace: ''}],
+        ['an empty template scene', {templateSceneId: ''}],
+    ]) {
+        it(`refuses a request naming ${description}, without reading anything`, async () => {
+            const harness = await service();
+            // Enough canned answers that the request would sail through every guard if it got
+            // that far, and a template object waiting to be cloned if it reached the lookup.
+            db.counts.push(3);
+            db.counts.push(0);
+            db.findRows.push([{object_id: 'shelf-1', type: 'object', attributes: {}}]);
+            await deliver(harness, objectTopic('req-1'), request(missing));
+            assert.deepEqual(db.calls, [], 'nothing is counted, nothing is read and nothing is written');
+            assert.deepEqual(harness.published, [], 'and nothing is announced');
+            assert.ok(logs.log.some((line) => line.includes('Ignoring loadTemplate request')),
+                'the request is logged rather than dropped in silence');
+        });
+    }
 });
 
 // Kept last: these handlers replace module state that later tests would otherwise inherit.

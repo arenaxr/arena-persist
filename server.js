@@ -402,6 +402,16 @@ async function handleGetPersist(arenaObj, topic) {
  */
 async function handleLoadTemplate(arenaObj) {
     const a = arenaObj.attributes;
+    // Both halves of the template's address are required. A request missing either one used to
+    // fall past the emptiness check below and reach loadTemplate, where mongoose drops the
+    // undefined key from the filter, so the lookup widened to every object sharing the half that
+    // was given - or, with both missing, to the whole collection - and cloned all of it into the
+    // requesting scene. Refuse the request instead of guessing what it meant.
+    if (!a.templateNamespace || !a.templateSceneId) {
+        console.log('Ignoring loadTemplate request without both a template namespace and scene',
+            arenaObj.namespace, arenaObj.sceneId, arenaObj.object_id);
+        return;
+    }
     const opts = {
         ttl: a.ttl,
         persist: a.persist,
@@ -410,13 +420,12 @@ async function handleLoadTemplate(arenaObj) {
             rotation: a.rotation,
         },
     };
-    if (a.templateNamespace && a.templateSceneId) { // make sure template isn't empty
-        if (await ArenaObject.countDocuments({
-            namespace: a.templateNamespace,
-            sceneId: a.templateSceneId,
-        }) === 0) {
-            return;
-        }
+    // Make sure the template isn't empty
+    if (await ArenaObject.countDocuments({
+        namespace: a.templateNamespace,
+        sceneId: a.templateSceneId,
+    }) === 0) {
+        return;
     }
     if (a.instanceId) { // Make sure this instance does not exist in target
         if (await ArenaObject.countDocuments({
@@ -498,6 +507,41 @@ const createArenaObj = async (
     }), JSON.stringify(msg));
 };
 
+/** Pose the Template container falls back to for anything the request does not usably ask for. */
+const CONTAINER_POSE_DEFAULTS = {
+    position: {x: 0, y: 0, z: 0},
+    rotation: {x: 0, y: 0, z: 0},
+};
+
+/**
+ * Picks the axes of a requested pose component that can actually place an object.
+ * `attributes` is Mixed in the schema and createArenaObj runs no validators, so a component that
+ * is not an {x, y, z} object of finite numbers would otherwise reach both Mongo and the broker.
+ * @param {*} component - Whatever the request offered for this component.
+ * @param {string} name - Component name, for the log.
+ * @return {Object} The usable axes of component, empty if it offered none.
+ */
+const poseAxes = (component, name) => {
+    if (component === undefined || component === null) {
+        return {};
+    }
+    if (typeof component !== 'object' || Array.isArray(component)) {
+        console.log(`Ignoring template container ${name}, not an {x, y, z} object`,
+            JSON.stringify(component));
+        return {};
+    }
+    const axes = {};
+    for (const axis of ['x', 'y', 'z']) {
+        if (Number.isFinite(component[axis])) {
+            axes[axis] = component[axis];
+        } else if (component[axis] !== undefined) {
+            console.log(`Ignoring template container ${name}.${axis}, not a finite number`,
+                JSON.stringify(component[axis]));
+        }
+    }
+    return axes;
+};
+
 /**
  * Loads a template-scene and instantiates all objects from it in into a
  * target scene, first inside a templateContainer parent, then with each
@@ -513,8 +557,11 @@ const createArenaObj = async (
  * @param {boolean}[opts.noParent] - Do not wrap all cloned objects in a parent container
  * @param {Number} [opts.ttl] - Duration TTL (seconds) of Template container
  * @param {boolean} [opts.persist] - Whether to persist *all* templated objects
- * @param {Object} [opts.attributes] - data payload Template container
- * @param {Object} [opts.pose] - Where to place the Template container
+ * @param {Object} [opts.attributes] - data payload Template container. Any `position` or
+ *     `rotation` in here is overridden: those two always come from opts.pose over the defaults.
+ *     Ignored entirely when opts.noParent is set, since then there is no container to place.
+ * @param {Object} [opts.pose] - Where to place the Template container. Each of the axes it names
+ *     must be a finite number; anything else keeps the default for that axis.
  * @param {Object} [opts.pose.position] - position of the Template container
  * @param {Object} [opts.pose.rotation] - rotation of the Template container
  */
@@ -535,19 +582,21 @@ const loadTemplate = async (
         ttl: undefined,
         persist: false,
         attributes: {
-            position: {x: 0, y: 0, z: 0},
-            rotation: {x: 0, y: 0, z: 0},
+            ...CONTAINER_POSE_DEFAULTS,
             object_type: 'templateContainer',
         },
     };
     const options = Object.assign(defaultOpts, opts);
-    // A requested pose places the container, one component at a time, so a request carrying only
-    // a position keeps the default rotation.
-    const {position, rotation} = options.pose ?? {};
+    // A requested pose places the container one axis at a time over CONTAINER_POSE_DEFAULTS, so a
+    // request naming only position.x, or only a position and no rotation, keeps the default for
+    // every axis it leaves out - and so does one naming an axis, or a whole component, that could
+    // not place anything. The container therefore always carries a full numeric position and
+    // rotation, which is what it had before the pose was wired through at all.
+    const pose = options.pose ?? {};
     options.attributes = {
         ...options.attributes,
-        ...(position ? {position} : {}),
-        ...(rotation ? {rotation} : {}),
+        position: {...CONTAINER_POSE_DEFAULTS.position, ...poseAxes(pose.position, 'position')},
+        rotation: {...CONTAINER_POSE_DEFAULTS.rotation, ...poseAxes(pose.rotation, 'rotation')},
     };
     const templatePrefix = `${templateNamespace}|${templateSceneId}::${instanceId}`;
     // Create template container, always
