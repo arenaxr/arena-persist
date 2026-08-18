@@ -172,16 +172,26 @@ const startServer = async () => {
     console.warn = (...args) => logs.warn.push(args.join(' '));
 
     // The hourly persists refresh would otherwise hold the process open for an hour; every other
-    // timer, including the event loop yields inside the cascading delete, stays real.
+    // timer, including the event loop yields inside the cascading delete, stays real. The
+    // callback it was scheduled with is kept so the refresh can be stepped by hand, the same way
+    // the expiry pass is.
     const realSetTimeout = global.setTimeout;
-    global.setTimeout = (fn, ms, ...rest) => {
-        if (ms === 60 * 60 * 1000) {
-            const idle = realSetTimeout(() => {}, 1);
-            idle.unref();
-            return idle;
-        }
-        return realSetTimeout(fn, ms, ...rest);
+    let hourlyRefresh;
+    const catchHourlyTimer = () => {
+        global.setTimeout = (fn, ms, ...rest) => {
+            if (ms === 60 * 60 * 1000) {
+                hourlyRefresh = fn;
+                const idle = realSetTimeout(() => {}, 1);
+                idle.unref();
+                return idle;
+            }
+            return realSetTimeout(fn, ms, ...rest);
+        };
+        return () => {
+            global.setTimeout = realSetTimeout;
+        };
     };
+    const releaseHourlyTimer = catchHourlyTimer();
 
     require('../server');
     const ArenaObject = mongoose.model('ArenaObject');
@@ -190,7 +200,8 @@ const startServer = async () => {
     for (let turn = 0; turn < 20; turn++) {
         await new Promise((resolve) => setImmediate(resolve));
     }
-    global.setTimeout = realSetTimeout;
+    releaseHourlyTimer();
+    assert.ok(hourlyRefresh, 'the service should have scheduled the hourly persists refresh');
 
     assert.ok(injected, 'the service should have started its express server');
     assert.equal(intervals.length, 1, 'the service should have scheduled exactly one expiry timer');
@@ -206,6 +217,16 @@ const startServer = async () => {
         publishExpires: intervals[0].fn,
         published,
         onMessage: events.message,
+        // Runs the hourly refresh, holding its rescheduling of itself back the same way startup
+        // does so the run does not leave an hour-long timer behind.
+        refreshPersists: async () => {
+            const release = catchHourlyTimer();
+            try {
+                await hourlyRefresh();
+            } finally {
+                release();
+            }
+        },
     };
 };
 
@@ -972,11 +993,7 @@ describe('MQTT connection events', () => {
         assert.equal(harness.intervals[harness.intervals.length - 1].ms, 1000);
     });
 
-    // Characterization, not endorsement: the resync replaces the persists set rather than
-    // refilling it, so the set that was handed to the express server on startup is no longer the
-    // one the message handler uses. Pinned so the aliasing is visible; fixing it is a separate
-    // change.
-    it('leaves the set the express server holds behind when it resyncs', async () => {
+    it('refills the set the express server holds when it resyncs, rather than replacing it', async () => {
         const harness = await service();
         db.findRows.push([]);
         await harness.events.reconnect();
@@ -984,7 +1001,119 @@ describe('MQTT connection events', () => {
             object_id: 'after-reconnect', action: 'create', type: 'object', persist: true, data: {},
         });
         assert.equal(db.of('findOneAndUpdate').length, 1, 'the object is still written');
-        assert.deepEqual([...harness.persists], [],
-            'but the set the express server prunes on scene delete never learns about it');
+        assert.deepEqual([...harness.persists], [key('after-reconnect')],
+            'and the set the express server prunes on scene delete learns about it');
+    });
+
+    it('replaces the contents of that set with what the database holds', async () => {
+        const harness = await service();
+        harness.persists.add(key('gone-since'));
+        db.findRows.push([{namespace: NAMESPACE, sceneId: SCENE, object_id: 'still-there'}]);
+        await harness.events.reconnect();
+        assert.deepEqual([...harness.persists], [key('still-there')],
+            'the resynced keys are in, and a key the database no longer has is out');
+    });
+});
+
+// Kept last with the connection events, for the same reason: these tests step the hourly refresh,
+// which reschedules itself, and they leave keys in the set that later tests would inherit.
+describe('persists set ownership', () => {
+    /**
+     * A create of a persisted object, as a client publishes it.
+     * @param {string} objectId - object_id of the object.
+     * @return {Object} The message payload.
+     */
+    const create = (objectId) => ({
+        object_id: objectId, action: 'create', type: 'object', persist: true, data: {},
+    });
+
+    /**
+     * An update to a persisted object, which the service applies only if it knows the key.
+     * @param {string} objectId - object_id of the object.
+     * @return {Object} The message payload.
+     */
+    const update = (objectId) => ({
+        object_id: objectId, action: 'update', type: 'object', persist: true,
+        data: {material: {color: '#00ff00'}},
+    });
+
+    /**
+     * The prefix scan DELETE /persist/:namespace/:sceneId runs over the set it was handed at
+     * startup, applied here to the set the service actually handed it. The route itself is
+     * covered in test/express_server.test.js; what is under test here is that the object the
+     * route holds is still the one the message handler consults.
+     * @param {Set<string>} persists - The set the express server was started with.
+     * @param {string} namespace - Namespace of the deleted scene.
+     * @param {string} sceneId - The deleted scene.
+     */
+    const pruneScene = (persists, namespace, sceneId) => {
+        for (const k of persists) {
+            if (k.startsWith(`${namespace}|${sceneId}|`)) {
+                persists.delete(k);
+            }
+        }
+    };
+
+    it('keeps the express server and the message handler on one set across an hourly refresh', async () => {
+        const harness = await service();
+        await deliver(harness, objectTopic('before'), create('before'));
+        db.findRows.push([{namespace: NAMESPACE, sceneId: SCENE, object_id: 'before'}]);
+        await harness.refreshPersists();
+        assert.deepEqual(db.of('find')[0], [{}, {'object_id': 1, 'namespace': 1, 'sceneId': 1, '_id': 0}],
+            'the refresh reads the keys back from the database');
+        assert.deepEqual([...harness.persists], [key('before')],
+            'the refreshed keys land in the set the express server holds');
+        await deliver(harness, objectTopic('after'), create('after'));
+        assert.deepEqual([...harness.persists].sort(), [key('after'), key('before')],
+            'and a key the handler adds after the refresh is visible there too');
+    });
+
+    it('reschedules the refresh each time it runs', async () => {
+        const harness = await service();
+        await harness.refreshPersists();
+        await harness.refreshPersists();
+        assert.equal(db.of('find').length, 2, 'the second run happened, so the first rescheduled it');
+    });
+
+    it('still lets a scene delete prune the keys the message handler checks, after a refresh', async () => {
+        const harness = await service();
+        db.findRows.push([
+            {namespace: NAMESPACE, sceneId: SCENE, object_id: 'box-1'},
+            {namespace: NAMESPACE, sceneId: 'atrium', object_id: 'box-2'},
+        ]);
+        await harness.refreshPersists();
+        pruneScene(harness.persists, NAMESPACE, SCENE);
+        db.reset();
+        await deliver(harness, objectTopic('box-1'), update('box-1'));
+        assert.deepEqual(db.calls, [],
+            'the handler agrees the pruned object is no longer persisted');
+        await deliver(harness, objectTopic('box-2', {sceneId: 'atrium'}), update('box-2'));
+        assert.equal(db.of('findOneAndUpdate').length, 1,
+            'while the untouched scene is still writable');
+    });
+
+    it('never hides an existing key while a refresh is in flight', async () => {
+        const harness = await service();
+        await deliver(harness, objectTopic('box-1'), create('box-1'));
+        const recorded = harness.ArenaObject.find;
+        let releaseQuery;
+        const rows = new Promise((resolve) => {
+            releaseQuery = () => resolve([{namespace: NAMESPACE, sceneId: SCENE, object_id: 'box-1'}]);
+        });
+        harness.ArenaObject.find = () => rows;
+        try {
+            const refreshing = harness.refreshPersists();
+            assert.ok(harness.persists.has(key('box-1')),
+                'the key is still there while the refresh waits on the database');
+            await deliver(harness, objectTopic('box-1'), update('box-1'));
+            assert.equal(db.of('findOneAndUpdate').length, 2,
+                'so an update arriving mid-refresh is still applied');
+            releaseQuery();
+            await refreshing;
+        } finally {
+            harness.ArenaObject.find = recorded;
+        }
+        assert.deepEqual([...harness.persists], [key('box-1')],
+            'and the key is still there once the refresh completes');
     });
 });

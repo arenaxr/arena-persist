@@ -48,10 +48,34 @@ const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
 
 let mqttClient;
 let mqttClientOptions;
-let persists = new Set();
+// One set for the life of the process. express_server.js and cascade.js are handed this
+// object and keep their own reference to it, so it is refilled in place on every resync
+// rather than replaced: rebinding it here would leave them working on an abandoned copy.
+const persists = new Set();
 let expirations;
 let expireTimer;
 let persistUpdateTimeout;
+
+/**
+ * Refills the persists set from the database, keeping the same set object.
+ *
+ * Every key is read before anything is dropped, and the clear-and-refill that follows runs
+ * to completion without awaiting, so no message handler can observe the set empty or
+ * half-filled: it sees either the previous contents or the refreshed ones.
+ * @return {Promise<void>}
+ */
+async function resyncPersists() {
+    const keys = (await ArenaObject.find({}, {
+        'object_id': 1,
+        'namespace': 1,
+        'sceneId': 1,
+        '_id': 0,
+    })).map((o) => `${o.namespace}|${o.sceneId}|${o.object_id}`);
+    persists.clear();
+    for (const key of keys) {
+        persists.add(key);
+    }
+}
 
 /**
  * Force refresh of the persists set every hour
@@ -61,12 +85,7 @@ async function updatePersists() {
     if (persistUpdateTimeout) {
         clearTimeout(persistUpdateTimeout);
     }
-    persists = new Set((await ArenaObject.find({}, {
-        'object_id': 1,
-        'namespace': 1,
-        'sceneId': 1,
-        '_id': 0,
-    })).map((o) => `${o.namespace}|${o.sceneId}|${o.object_id}`));
+    await resyncPersists();
     persistUpdateTimeout = setTimeout(updatePersists, 60 * 60 * 1000);
 }
 
@@ -133,12 +152,7 @@ async function runMQTT() {
     mqttClient.on('reconnect', async () => {
         console.log('reconnect');
         // Resync
-        persists = new Set((await ArenaObject.find({}, {
-            'object_id': 1,
-            'namespace': 1,
-            'sceneId': 1,
-            '_id': 0,
-        })).map((o) => `${o.namespace}|${o.sceneId}|${o.object_id}`));
+        await resyncPersists();
         if (expireTimer) {
             await clearIntervalAsync(expireTimer);
         }
