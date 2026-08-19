@@ -79,7 +79,10 @@ const withPartialResult = (err, partial) => {
  * persists, which silently un-persists a live object if one has since been
  * created with the same id in the same scene.
  *
- * @param {Set<string>} persists - Keys of all persisted objects, as namespace|sceneId|object_id.
+ * @param {{delete: function(string): void}} persists - Keys of all persisted objects, as
+ *     namespace|sceneId|object_id. Only delete is used, so the caller may hand over a wrapper
+ *     around the set rather than the set itself — server.js does, because a removal has to be
+ *     recorded against a resync whose query is already in flight.
  * @param {Map<string, Object>} expirations - Pending TTL deadlines, keyed the same way.
  * @param {Object} scope - Scene that the ids being forgotten belong to.
  * @param {string} scope.namespace - namespace of the scene.

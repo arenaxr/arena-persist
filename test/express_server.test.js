@@ -668,6 +668,20 @@ describe('DELETE scene', () => {
             'public|other|box-4',
         ], 'a scene whose name merely shares a prefix keeps its keys');
     });
+
+    it('removes those keys through the injected forgetPersist, not out of the set itself', async () => {
+        const persists = new Set(['public|lobby|box-1', 'public|lobby|box-2', 'public|other|box-3']);
+        const forgotten = [];
+        const {app} = await startApp({persists, forgetPersist: (key) => forgotten.push(key)});
+        await request(app, {
+            method: 'delete', path: '/persist/:namespace/:sceneId', params: {namespace: 'public', sceneId: 'lobby'},
+        });
+        assert.deepEqual(forgotten.sort(), ['public|lobby|box-1', 'public|lobby|box-2'],
+            'the keys of the deleted scene go to the removal the caller injected');
+        assert.deepEqual([...persists].sort(), ['public|lobby|box-1', 'public|lobby|box-2', 'public|other|box-3'],
+            'and the route never reaches past it into the set, so a removal the caller has to ' +
+            'record cannot be made behind its back');
+    });
 });
 
 describe('POST scene clone', () => {
