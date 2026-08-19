@@ -148,11 +148,29 @@ async function resyncPersists() {
 }
 
 /**
+ * Reads the persisted keys for the first time and starts the hourly refresh.
+ *
+ * Unlike the refresh below, this does not swallow a failure. An empty persists set is not a
+ * degraded service, it is a silently wrong one: every update for an object that already exists
+ * fails the guard and is discarded, and every delete for one is ignored, with nothing logged per
+ * message and no client told. Serving that for up to an hour is worse than not starting, so the
+ * rejection is left to end startup.
+ * @return {Promise<void>}
+ */
+async function startPersists() {
+    await resyncPersists();
+    persistUpdateTimeout = setTimeout(updatePersists, 60 * 60 * 1000);
+}
+
+/**
  * Force refresh of the persists set every hour
  *
- * The reschedule is in a finally: this runs as a bare setTimeout callback, so a rejection here
- * is an unhandled rejection that ends the process, and a reschedule reached only on success
- * would let one failed query stop every later refresh.
+ * A failure here is swallowed, unlike the first read at startup: by this point the set holds the
+ * previous refresh's keys rather than nothing, so carrying on with slightly stale contents and
+ * trying again in an hour costs less than ending a running service. The reschedule is in a
+ * finally because this runs as a bare setTimeout callback: a rejection escaping it would be an
+ * unhandled rejection that ends the process, and a reschedule reached only on success would let
+ * one failed query stop every later refresh.
  * @return {Promise<void>}
  */
 async function updatePersists() {
@@ -171,7 +189,7 @@ async function updatePersists() {
 mongoose.connect(config.mongodb.uri).then(async () => {
     console.log('Connected to Mongodb');
     await loadJose();
-    await updatePersists();
+    await startPersists();
     await runMQTT();
     await runExpress({
         ArenaObject,
@@ -184,7 +202,12 @@ mongoose.connect(config.mongodb.uri).then(async () => {
         jose,
     });
 }).catch((err) => {
-    console.log('Mongodb Connection Error: ', err);
+    // Exit, rather than log and carry on. Nothing in the chain above is optional, and mongoose
+    // keeps handles of its own open, so a process left alive here would hang forever with no MQTT
+    // subscription and no REST server while looking to its supervisor like a service that started.
+    // Exiting non-zero is what gets it restarted, and what makes the failure visible at all.
+    console.error('Fatal error starting the persistence service: ', err);
+    process.exit(1);
 });
 
 /**
