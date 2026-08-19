@@ -21,9 +21,29 @@ To develop the `arena-persist` locally:
 2. Start the local stack using `docker-compose -f docker-compose.localdev.yaml up -d arena-persist`
 3. The Node.js source folder is mounted via the localdev compose file. Modifying the `.js` files will automatically restart the server via `nodemon`.
 
+## Testing
+
+The unit tests in `test/` run **offline** with Node's built-in test runner — no MongoDB, no MQTT broker, and none of the `arena-services-docker` `.env` configuration above are required.
+
+1. Install dependencies: `npm ci`
+2. Run the full suite, exactly as CI does: `npm test`
+
+While iterating, narrow the run (`npm test` is `node --test`):
+
+```bash
+node --test test/utils.test.js                                # one file
+node --test --test-name-pattern='flatten' test/utils.test.js  # one suite or test, by name
+```
+
+> [!CAUTION]
+> Do not skip `npm ci` — `npm test` will still run, but files with unmet `require`s never load, so you get a silently truncated suite and a handful of failures that look unrelated to your change.
+
+New test files must match the runner's default pattern (`*.test.js`) or they are never discovered, and the suite stays green without them.
+
 ## Code Style
 - Follow standard JavaScript formatting guidelines.
 - Use explicit async/await constructs for all asynchronous MQTT and MongoDB operations.
+- **ESLint is configured but not gated.** `.eslintrc.js` (`eslint-config-google`, 4-space indent, 120-column limit) is not run by CI and there is no `npm run lint` script, but style is still raised in review. Check your own changes with `npx eslint <file>`. Note that `npx eslint .` reports 3 pre-existing errors in `server.js` and `topics.js` on `master` — leave those alone.
 
 The `arena-persist` uses [Release Please](https://github.com/googleapis/release-please) to automate CHANGELOG generation and semantic versioning. Your PR titles *must* follow Conventional Commit standards (e.g., `feat:`, `fix:`, `chore:`).
 
