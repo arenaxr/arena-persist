@@ -444,10 +444,16 @@ async function arenaMsgHandler(topic, message) {
         if (msgJSON.persist && msgJSON.persist !== false) {
             if (persists.has(
                 `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`)) {
+                // Whether the database holds the document this message's deadline would apply
+                // to. Both calls below resolve to the matched document, or to null when the
+                // filter matched nothing - a no-match does not reject - so the result decides
+                // this rather than the mere absence of a rejection. A persists key can outlive
+                // its document, which is the stale-key state this branch exists to narrow, and
+                // for such a key the write matches nothing while resolving perfectly well.
                 let written = false;
                 if (msgJSON.overwrite) {
                     try {
-                        await ArenaObject.findOneAndReplace(
+                        const replaced = await ArenaObject.findOneAndReplace(
                             {
                                 object_id: arenaObj.object_id,
                                 namespace: arenaObj.namespace,
@@ -455,15 +461,18 @@ async function arenaMsgHandler(topic, message) {
                             },
                             insertObj,
                         );
-                        written = true;
+                        written = replaced !== null && replaced !== undefined;
+                        if (!written) {
+                            console.log('Does not exist to update:', arenaObj.object_id);
+                        }
                     } catch (err) {
-                        console.log('Does not exist to update:', arenaObj.object_id);
+                        console.log('Error overwriting object: ', arenaObj.object_id, err);
                     }
                 } else {
                     const [sets, unSets] = filterNulls(
                         flatten({attributes: insertObj.attributes}));
                     try {
-                        await ArenaObject.findOneAndUpdate(
+                        const updated = await ArenaObject.findOneAndUpdate(
                             {
                                 object_id: arenaObj.object_id,
                                 namespace: arenaObj.namespace,
@@ -471,9 +480,12 @@ async function arenaMsgHandler(topic, message) {
                             },
                             {$set: sets, $unset: unSets},
                         );
-                        written = true;
+                        written = updated !== null && updated !== undefined;
+                        if (!written) {
+                            console.log('Does not exist:', arenaObj.object_id);
+                        }
                     } catch (err) {
-                        console.log('Does not exist:', arenaObj.object_id);
+                        console.log('Error updating object: ', arenaObj.object_id, err);
                     }
                 }
                 if (arenaObj.expireAt) {
@@ -483,13 +495,15 @@ async function arenaMsgHandler(topic, message) {
                             arenaObj,
                         );
                     } else {
-                        // The write did not resolve, so this message's deadline is not the
-                        // stored one. Tracking it anyway is worse than not tracking it: the
-                        // expiry pass would publish a delete for an object the database still
-                        // has, sweep its children, and drop its persists key, leaving a parent
-                        // no client can see and no message can reach until the hourly refresh.
-                        // What the database does hold is still worth following, in case the
-                        // write landed and only its acknowledgement was lost.
+                        // The write either rejected or matched nothing, so this message's
+                        // deadline is not known to be the stored one. Tracking it anyway is
+                        // worse than not tracking it: the expiry pass would publish a delete
+                        // for an object the database still has, sweep its children, and drop
+                        // its persists key, leaving a parent no client can see and no message
+                        // can reach until the hourly refresh. What the database does hold is
+                        // still worth following, in case the write landed and only its
+                        // acknowledgement was lost, or the key is stale and there is nothing
+                        // there to expire at all.
                         const stored = await findStoredObject(arenaObj);
                         if (stored && stored.expireAt) {
                             expirations.set(objKey(stored), stored);

@@ -67,12 +67,19 @@ const db = {
     findOneRows: [],
     counts: [],
     failures: {},
+    // Per-method queues of what a write resolves to, consumed one entry per call. A queued
+    // null models a filter that matched no document: mongo's findAndModify answers that with
+    // no document rather than an error, so findOneAndUpdate and findOneAndReplace resolve to
+    // null instead of rejecting. Without this the stub answered every write with a truthy
+    // object and no test could tell a no-match from a write.
+    writeResults: {},
     reset() {
         db.calls.length = 0;
         db.findRows.length = 0;
         db.findOneRows.length = 0;
         db.counts.length = 0;
         db.failures = {};
+        db.writeResults = {};
     },
     /**
      * Arguments of every recorded call of one model method, in call order.
@@ -115,6 +122,10 @@ const recordQueries = (ArenaObject) => {
     for (const name of ['findOneAndUpdate', 'findOneAndReplace', 'deleteOne', 'deleteMany']) {
         ArenaObject[name] = async (...args) => {
             record(name, args);
+            const queued = db.writeResults[name];
+            if (queued && queued.length) {
+                return queued.shift();
+            }
             return {acknowledged: true, deletedCount: 0};
         };
     }
@@ -685,6 +696,44 @@ describe('arenaMsgHandler update', () => {
         assert.deepEqual(harness.published.map(({payload}) => JSON.parse(payload)),
             [{object_id: 'acked-late', action: 'delete'}],
             'the deadline followed is the one the document carries');
+    });
+
+    it('does not track expiry when a ttl update matches no document', async () => {
+        const harness = await service();
+        harness.persists.add(key('stale'));
+        // The stale-key state: the key is remembered but the document is gone. The write does
+        // not reject for this - it matches nothing and resolves with no document - so nothing
+        // but the result distinguishes it from a write that landed.
+        db.writeResults.findOneAndUpdate = [null];
+        await deliver(harness, objectTopic('stale'), update({object_id: 'stale', ttl: -1}));
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published, [],
+            'an update that matched nothing must not schedule an expiry mongo does not hold');
+    });
+
+    it('does not track expiry when a ttl overwrite matches no document', async () => {
+        const harness = await service();
+        harness.persists.add(key('stale-replace'));
+        db.writeResults.findOneAndReplace = [null];
+        await deliver(harness, objectTopic('stale-replace'),
+            update({object_id: 'stale-replace', ttl: -1, overwrite: true}));
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published, [],
+            'an overwrite that matched nothing must not schedule one either');
+    });
+
+    it('reads back the stored document when a ttl update matches nothing', async () => {
+        const harness = await service();
+        harness.persists.add(key('stale-readback'));
+        db.writeResults.findOneAndUpdate = [null];
+        await deliver(harness, objectTopic('stale-readback'),
+            update({object_id: 'stale-readback', ttl: 3600}));
+        assert.equal(db.of('findOne').length, 1,
+            'a no-match takes the same read-back path as a rejected write');
+        assert.deepEqual(db.of('findOne')[0][0],
+            {object_id: 'stale-readback', namespace: NAMESPACE, sceneId: SCENE});
     });
 
     it('keeps the update in the scene the topic names', async () => {

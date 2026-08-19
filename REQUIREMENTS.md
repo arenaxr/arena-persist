@@ -68,7 +68,7 @@ graph TD
 | REQ-PS-010 | Objects with `ttl` (float seconds) auto-expire after set duration | [server.js#publishExpires](server.js) |
 | REQ-PS-011 | Publish `delete` action over MQTT on TTL expiry | [server.js#publishExpires](server.js) |
 | REQ-PS-012 | `ttl` implies `persist: true` | [server.js#arenaMsgHandler](server.js) |
-| REQ-PS-013 | Track an object for expiry only from a deadline the database holds: the one just written, or the stored one after a rejected write, never a failed message's own | [server.js#arenaMsgHandler](server.js) |
+| REQ-PS-013 | Never track an object for expiry from the deadline of a write that did not land: a write that rejected, or that matched no document, tracks a deadline only if one is read back from the stored document. A successful non-overwrite update still tracks its own message's deadline without writing it to the document, which is [#96](https://github.com/arenaxr/arena-persist/issues/96) and is unchanged here | [server.js#arenaMsgHandler](server.js) |
 
 ### Templates / Cloning
 
