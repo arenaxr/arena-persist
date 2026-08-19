@@ -52,10 +52,11 @@ let mqttClientOptions;
 // object and keep their own reference to it, so it is refilled in place on every resync
 // rather than replaced: rebinding it here would leave them working on an abandoned copy.
 const persists = new Set();
-// Keys the message handler persisted while a resync query was in flight. That query's result
-// predates those creates, so refilling from it alone would drop them; resyncPersists() unions
-// this set back in after the refill. Emptied when the first resync of a window starts.
-const persistsAddedDuringResync = new Set();
+// Every key added or removed while a resync query was in flight, mapped to whether it was still
+// persisted after the last of those changes. That query's result predates all of them, so
+// refilling from it alone would undo every one: a create would be dropped, and a delete would be
+// reversed. resyncPersists() replays this over the refill. Emptied when a resync window opens.
+const persistsChangedDuringResync = new Map();
 let resyncsInFlight = 0;
 let expirations;
 let expireTimer;
@@ -68,36 +69,58 @@ let persistUpdateTimeout;
 function rememberPersist(key) {
     persists.add(key);
     if (resyncsInFlight > 0) {
-        persistsAddedDuringResync.add(key);
+        persistsChangedDuringResync.set(key, true);
     }
 }
 
 /**
+ * Drops a key from the persists set, keeping it dropped through a resync already in flight.
+ *
+ * This is the only sanctioned way to remove a key, and every removal site goes through it: the
+ * expiry pass below, cascade.js's forget (which is handed this rather than the set itself), and
+ * express_server.js's scene-delete prune (which is handed it as forgetPersist). A site that
+ * called persists.delete directly would have its removal undone by the next refill, leaving a
+ * key behind for a document that is already gone.
+ * @param {string} key - namespace|sceneId|object_id of the object that is no longer persisted.
+ */
+function forgetPersist(key) {
+    persists.delete(key);
+    if (resyncsInFlight > 0) {
+        persistsChangedDuringResync.set(key, false);
+    }
+}
+
+/**
+ * The persists set as cascade.js should mutate it. buildForget only ever deletes from the
+ * collection it is handed, and a delete has to be recorded against an in-flight resync, so it is
+ * given this rather than the set itself.
+ */
+const persistsRemovals = {delete: forgetPersist};
+
+/**
  * Refills the persists set from the database, keeping the same set object.
  *
- * Two things are guaranteed, and one deliberately is not:
+ * Two things are guaranteed:
  *
  * - No handler observes the set empty or half-filled. Every key is read before anything is
  *   dropped, and the clear-and-refill that follows runs to completion in a single turn with no
  *   await in it, so a handler scheduled around it sees either the whole previous contents or the
  *   whole refreshed ones. Nothing may be awaited between the clear and the end of the refill.
- * - A key the handler persisted while the query was in flight survives the refill, because the
- *   query result predates that create and so does not carry it. Refilling from the query result
- *   alone would drop it, and the object would stay invisible to the handler until the next
- *   refresh: an hour of its updates discarded and a delete for it ignored entirely.
- * - A key *removed* while the query was in flight is not guaranteed to stay removed: the result
- *   still lists the object, so the refill puts it back. What follows is bounded and quiet rather
- *   than lossy — an update for it is written against a document that is already gone and changes
- *   nothing, a delete for it walks a cascade over nothing — and the next refresh drops the key.
- *   So this is not the same hazard as losing a key, and closing it would mean intercepting every
- *   removal site, in express_server.js and cascade.js as well as here.
+ * - A change made while the query was in flight wins over what that query returned, in either
+ *   direction. The result predates the change, so refilling from it alone would undo it: a key
+ *   the handler had just persisted would be dropped, leaving the object invisible to the handler
+ *   until the next refresh — an hour of its updates discarded and a delete for it ignored — and a
+ *   key a delete had just removed would come back, letting later messages past the guard and on to
+ *   a document that is already gone. Both are avoided by replaying those changes over the refill,
+ *   which is why rememberPersist and forgetPersist are the only ways the set is mutated.
  * @return {Promise<void>}
  */
 async function resyncPersists() {
     if (resyncsInFlight === 0) {
         // Start of a fresh window. Anything left from an earlier one, including from a resync
-        // whose query was rejected, is already in persists and must not be unioned in again.
-        persistsAddedDuringResync.clear();
+        // whose query was rejected, already agrees with persists and must not be replayed again:
+        // a key removed since that window closed would be resurrected by replaying its create.
+        persistsChangedDuringResync.clear();
     }
     resyncsInFlight++;
     let keys;
@@ -115,8 +138,12 @@ async function resyncPersists() {
     for (const key of keys) {
         persists.add(key);
     }
-    for (const key of persistsAddedDuringResync) {
-        persists.add(key);
+    for (const [key, stillPersisted] of persistsChangedDuringResync) {
+        if (stillPersisted) {
+            persists.add(key);
+        } else {
+            persists.delete(key);
+        }
     }
 }
 
@@ -153,6 +180,7 @@ mongoose.connect(config.mongodb.uri).then(async () => {
         mongooseConnection: mongoose.connection,
         loadTemplate,
         persists,
+        forgetPersist,
         jose,
     });
 }).catch((err) => {
@@ -439,7 +467,7 @@ async function deletePersistedObject(arenaObj) {
                 'sceneId': scope.sceneId,
             });
         },
-        forget: buildForget(persists, expirations, scope),
+        forget: buildForget(persistsRemovals, expirations, scope),
     });
 }
 
@@ -657,7 +685,7 @@ const publishExpires = async () => {
                 objectId: obj.object_id,
             }), JSON.stringify(msg));
             expirations.delete(key);
-            persists.delete(key);
+            forgetPersist(key);
             await ArenaObject.deleteMany({
                 'attributes.parent': obj.object_id,
                 'namespace': obj.namespace,

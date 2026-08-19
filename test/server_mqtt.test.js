@@ -119,8 +119,9 @@ const logs = {log: [], warn: []};
 
 /**
  * Loads server.js against fakes and returns everything it handed to its collaborators.
- * @return {Promise<Object>} The message handler, publishExpires, the live persists set, the
- *     service's loadTemplate, the fake MQTT client and its recorded publishes.
+ * @return {Promise<Object>} The message handler, publishExpires, the live persists set and the
+ *     removal callback that goes with it, the service's loadTemplate, the fake MQTT client and its
+ *     recorded publishes.
  */
 const startServer = async () => {
     let releaseConnect;
@@ -213,6 +214,7 @@ const startServer = async () => {
         cleared,
         events,
         intervals,
+        forgetPersist: injected.forgetPersist,
         loadTemplate: injected.loadTemplate,
         mqttClient,
         persists: injected.persists,
@@ -1061,20 +1063,65 @@ describe('persists set ownership', () => {
     });
 
     /**
-     * The prefix scan DELETE /persist/:namespace/:sceneId runs over the set it was handed at
-     * startup, applied here to the set the service actually handed it. The route itself is
-     * covered in test/express_server.test.js; what is under test here is that the object the
-     * route holds is still the one the message handler consults.
-     * @param {Set<string>} persists - The set the express server was started with.
+     * A delete message for one object.
+     * @param {string} objectId - object_id of the object.
+     * @return {Object} The message payload.
+     */
+    const remove = (objectId) => ({object_id: objectId, action: 'delete', type: 'object', data: {}});
+
+    /**
+     * The prefix scan DELETE /persist/:namespace/:sceneId runs, over the collaborators the
+     * service handed the express server: its set, and its removal callback. The route itself is
+     * covered in test/express_server.test.js; what is under test here is that what the route was
+     * handed still reaches the state the message handler consults.
+     * @param {Object} harness - The harness from service().
      * @param {string} namespace - Namespace of the deleted scene.
      * @param {string} sceneId - The deleted scene.
      */
-    const pruneScene = (persists, namespace, sceneId) => {
-        for (const k of persists) {
+    const pruneScene = (harness, namespace, sceneId) => {
+        for (const k of harness.persists) {
             if (k.startsWith(`${namespace}|${sceneId}|`)) {
-                persists.delete(k);
+                harness.forgetPersist(k);
             }
         }
+    };
+
+    /**
+     * Starts the hourly refresh and holds its database query open, so the window in which the
+     * refresh has read nothing back yet can be driven by hand.
+     *
+     * Only the refresh's own query is held. Later find() calls, which a cascading delete makes
+     * for its child and orphan levels, go to the recorder as usual.
+     * @param {Object} harness - The harness from service().
+     * @param {Array<Object>} rows - What the refresh's query resolves with.
+     * @return {{finish: function(): Promise<void>}} finish releases the query and settles the
+     *     refresh, restoring the recorder.
+     */
+    const holdRefresh = (harness, rows) => {
+        const recorded = harness.ArenaObject.find;
+        let release;
+        const held = new Promise((resolve) => {
+            release = () => resolve(rows);
+        });
+        let first = true;
+        harness.ArenaObject.find = (...args) => {
+            if (first) {
+                first = false;
+                return held;
+            }
+            return recorded(...args);
+        };
+        const refreshing = harness.refreshPersists();
+        return {
+            finish: async () => {
+                release();
+                try {
+                    await refreshing;
+                } finally {
+                    harness.ArenaObject.find = recorded;
+                }
+            },
+        };
     };
 
     it('keeps the express server and the message handler on one set across an hourly refresh', async () => {
@@ -1107,7 +1154,7 @@ describe('persists set ownership', () => {
             {namespace: NAMESPACE, sceneId: 'atrium', object_id: 'box-2'},
         ]);
         await harness.refreshPersists();
-        pruneScene(harness.persists, NAMESPACE, SCENE);
+        pruneScene(harness, NAMESPACE, SCENE);
         db.reset();
         await deliver(harness, objectTopic('box-1'), update('box-1'));
         assert.deepEqual(db.calls, [],
@@ -1185,6 +1232,67 @@ describe('persists set ownership', () => {
         await deliver(harness, objectTopic('box-2'), update('box-2'));
         assert.equal(db.of('findOneAndUpdate').length, 1,
             'so a later update for that object is still applied, not silently dropped');
+    });
+
+    it('drops an object created and then deleted while the refresh query was in flight', async () => {
+        const harness = await service();
+        const held = holdRefresh(harness, []);
+        // Created after the query was issued, so its rows cannot carry the key either way.
+        await deliver(harness, objectTopic('box-2'), create('box-2'));
+        assert.ok(harness.persists.has(key('box-2')), 'the create is remembered');
+        await deliver(harness, objectTopic('box-2'), remove('box-2'));
+        assert.ok(!harness.persists.has(key('box-2')), 'and the delete forgets it again');
+        await held.finish();
+        assert.deepEqual([...harness.persists], [],
+            'the refresh does not resurrect the key the delete removed');
+        db.reset();
+        await deliver(harness, objectTopic('box-2'), update('box-2'));
+        assert.deepEqual(db.calls, [],
+            'so a later update for the deleted object is not written against a gone document');
+    });
+
+    it('drops the keys a REST scene delete pruned while the refresh query was in flight', async () => {
+        const harness = await service();
+        assert.equal(typeof harness.forgetPersist, 'function',
+            'the service hands the express server a way to remove a key that a refresh respects');
+        const held = holdRefresh(harness, []);
+        await deliver(harness, objectTopic('box-2'), create('box-2'));
+        await deliver(harness, objectTopic('box-3', {sceneId: 'atrium'}), create('box-3'));
+        pruneScene(harness, NAMESPACE, SCENE);
+        await held.finish();
+        assert.deepEqual([...harness.persists], [key('box-3', NAMESPACE, 'atrium')],
+            'the pruned scene stays pruned, and the untouched scene keeps its key');
+        db.reset();
+        await deliver(harness, objectTopic('box-2'), update('box-2'));
+        assert.deepEqual(db.calls, [], 'so the handler agrees the deleted scene is gone');
+    });
+
+    it('drops a key the expiry pass removed while the refresh query was in flight', async () => {
+        const harness = await service();
+        await harness.publishExpires(); // Drain ttl entries earlier tests left behind.
+        harness.persists.clear();
+        const held = holdRefresh(harness, []);
+        await deliver(harness, objectTopic('box-2'), {
+            object_id: 'box-2', action: 'create', type: 'object', persist: true, ttl: -1, data: {},
+        });
+        assert.ok(harness.persists.has(key('box-2')), 'the create is remembered');
+        await harness.publishExpires();
+        assert.ok(!harness.persists.has(key('box-2')), 'and the expiry pass forgets it again');
+        await held.finish();
+        assert.deepEqual([...harness.persists], [],
+            'the refresh does not resurrect the key the expiry pass removed');
+    });
+
+    it('drops a key deleted while the refresh query was in flight, though its rows still list it', async () => {
+        const harness = await service();
+        await deliver(harness, objectTopic('box-1'), create('box-1'));
+        // The query was issued before the delete, so its result still carries the object.
+        const held = holdRefresh(harness, [{namespace: NAMESPACE, sceneId: SCENE, object_id: 'box-1'}]);
+        await deliver(harness, objectTopic('box-1'), remove('box-1'));
+        assert.ok(!harness.persists.has(key('box-1')), 'the delete forgets the key');
+        await held.finish();
+        assert.deepEqual([...harness.persists], [],
+            'and the refill does not put it back from its stale rows');
     });
 
     it('reschedules the refresh even when its query is rejected', async () => {

@@ -19,6 +19,9 @@ const VERIFY_OPTIONS = {
  * @param {object} mongooseConnection - mongoose.connection
  * @param {function} loadTemplate - function to clone templates
  * @param {Set} persists - set of persisted objects
+ * @param {function} [forgetPersist] - drops one key from persists, and keeps it dropped through a
+ *     resync of that set that is already in flight. Defaults to a plain delete, which is correct
+ *     only where nothing else resyncs the set; server.js passes its own.
  * @param {object} jose - jose library instance
  */
 exports.runExpress = async ({
@@ -28,6 +31,7 @@ exports.runExpress = async ({
     mongooseConnection,
     loadTemplate,
     persists,
+    forgetPersist = (key) => persists.delete(key),
     jose,
 }) => {
     const app = express();
@@ -316,7 +320,9 @@ exports.runExpress = async ({
         });
         for (const key of persists) {
             if (key.startsWith(`${query.namespace}|${query.sceneId}|`)) {
-                persists.delete(key);
+                // Not persists.delete: a resync of the set may already be in flight, and its
+                // refill would put back anything removed behind forgetPersist's back.
+                forgetPersist(key);
             }
         }
     });
