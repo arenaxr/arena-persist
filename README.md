@@ -24,7 +24,9 @@ per [documentation](https://www.mongodb.com/docs/manual/release-notes/8.0-upgrad
 ### Persistence
 
 - An ARENA object is added to persist if it has `action: create` and  `persist: true`  in its MQTT message.
-  - If the object already exists in persist, it will be **replaced** in entirety.
+  - If the object already exists in persist, its `data` will be **replaced** in entirety. Fields the create message
+    does not carry, such as an `expireAt` from an earlier `ttl`, are left as they are: the write is an upsert that
+    mongoose casts to `$set`, so it merges at the document level.
 - A persisted ARENA object can be updated if it has `action: update`  and `persist: true` set in its MQTT message. The
    properties in its `data` will be merged on top of the previously saved `data`.
     - If an `update` message contains an explicit `overwrite: true`, then the `data` therein will **replace** what is saved in persistence.

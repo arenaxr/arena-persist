@@ -52,13 +52,14 @@ graph TD
 | ID | Requirement | Source |
 |----|-------------|--------|
 | REQ-PS-001 | Save objects with `action: create` + `persist: true` to MongoDB | [server.js#arenaMsgHandler](server.js) |
-| REQ-PS-002 | Replace existing object entirely on re-create | [server.js#arenaMsgHandler](server.js) |
+| REQ-PS-002 | Replace a stored object's `data` in entirety on re-create, while the fields the message does not carry - `expireAt`, `private`, `program_id`, `createdAt` - survive, the upsert being cast to `$set` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-003 | Merge `data` properties on `action: update` + `persist: true` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-004 | Full data replacement on `update` with `overwrite: true` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-005 | Skip persistence on `update` with explicit `persist: false` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-006 | Delete object on `action: delete` | [server.js#arenaMsgHandler](server.js) |
 | REQ-PS-007 | Delete all descendants of a deleted object, at any depth, bounded by `MAX_CASCADE_NODES` and `MAX_CASCADE_DEPTH` | [cascade.js#cascadeDeleteDescendants](cascade.js) |
 | REQ-PS-008 | Keep a deleted object's `persists` key when its descendant delete could not finish, so a retried `delete` resumes the cleanup | [cascade.js#deleteObjectAndDescendants](cascade.js) |
+| REQ-PS-009 | Record a created object's `persists` key only once its write resolved, or once the document has been read back after a rejected write, and never drop a key the object already had | [server.js#arenaMsgHandler](server.js) |
 
 ### TTL (Time-to-Live)
 
@@ -67,6 +68,7 @@ graph TD
 | REQ-PS-010 | Objects with `ttl` (float seconds) auto-expire after set duration | [server.js#publishExpires](server.js) |
 | REQ-PS-011 | Publish `delete` action over MQTT on TTL expiry | [server.js#publishExpires](server.js) |
 | REQ-PS-012 | `ttl` implies `persist: true` | [server.js#arenaMsgHandler](server.js) |
+| REQ-PS-013 | Never track an object for expiry from the deadline of a write that did not land: a write that rejected, or that matched no document, tracks a deadline only if one is read back from the stored document. A successful non-overwrite update still tracks its own message's deadline without writing it to the document, which is [#96](https://github.com/arenaxr/arena-persist/issues/96) and is unchanged here | [server.js#arenaMsgHandler](server.js) |
 
 ### Templates / Cloning
 
