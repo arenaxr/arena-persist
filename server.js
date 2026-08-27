@@ -59,6 +59,12 @@ const persists = new Set();
 const persistsChangedDuringResync = new Map();
 let resyncsInFlight = 0;
 let expirations;
+// The earliest expireAt of anything in expirations, or null when nothing is tracked. It is a
+// lower bound rather than an exact minimum: an entry dropped by a delete can only push the real
+// minimum later, and this is deliberately not recomputed on a removal. Being early only costs the
+// expiry pass one full scan it could have skipped, while being late would leave an object
+// unexpired, so every write of it goes through noteEarliestExpiry and only ever lowers it.
+let earliestExpiry = null;
 let expireTimer;
 let persistUpdateTimeout;
 
@@ -290,6 +296,7 @@ async function runMQTT() {
             qos: 1,
         }).then(async () => {
             expirations = new Map();
+            earliestExpiry = null;
             if (expireTimer) {
                 await clearIntervalAsync(expireTimer);
             }
@@ -313,6 +320,55 @@ function objKey(arenaObj) {
 }
 
 /**
+ * The four fields of a tracked object that the expiry pass actually reads.
+ *
+ * expirations used to hold the whole Mongoose document, which is the same object the write path
+ * already has in hand and so looks free, but a hydrated document retains far more than the deadline
+ * it is being kept for and the map is held for the life of the process. publishExpires reads
+ * expireAt to decide whether the object is due, object_id to name it in the published delete, and
+ * namespace and sceneId to address the topic; deletePersistedObject, which it calls, reads the same
+ * three identifying fields and nothing else.
+ * @param {object} arenaObj - Object following the ArenaObject schema, as stored.
+ * @return {{object_id: string, namespace: string, sceneId: string, expireAt: Date}} What the
+ *     expiry pass needs, and nothing more.
+ */
+function expiryRecord(arenaObj) {
+    return {
+        object_id: arenaObj.object_id,
+        namespace: arenaObj.namespace,
+        sceneId: arenaObj.sceneId,
+        expireAt: arenaObj.expireAt,
+    };
+}
+
+/**
+ * The only write of earliestExpiry, and it only ever lowers it.
+ *
+ * A missing deadline is ignored rather than recorded, so that an entry without one — which nothing
+ * here creates, and which the pass has always simply skipped — cannot make the bound unusable and
+ * turn every later tick back into a full scan.
+ * @param {Date} expireAt - A tracked deadline.
+ */
+function noteEarliestExpiry(expireAt) {
+    if (!expireAt) {
+        return;
+    }
+    if (earliestExpiry === null || expireAt < earliestExpiry) {
+        earliestExpiry = expireAt;
+    }
+}
+
+/**
+ * Starts tracking one object's deadline, and lowers the earliest deadline if this one is sooner.
+ * @param {object} arenaObj - Object following the ArenaObject schema, as stored. Must have expireAt.
+ */
+function trackExpiry(arenaObj) {
+    const record = expiryRecord(arenaObj);
+    expirations.set(objKey(arenaObj), record);
+    noteEarliestExpiry(record.expireAt);
+}
+
+/**
  * Records an object as persisted, and tracks it for expiry when it has one.
  *
  * Called with whatever the database actually holds, and only ever from outside the try
@@ -327,7 +383,7 @@ function objKey(arenaObj) {
  */
 function rememberPersisted(arenaObj) {
     if (arenaObj.expireAt) {
-        expirations.set(objKey(arenaObj), arenaObj);
+        trackExpiry(arenaObj);
     }
     rememberPersist(objKey(arenaObj));
 }
@@ -490,10 +546,7 @@ async function arenaMsgHandler(topic, message) {
                 }
                 if (arenaObj.expireAt) {
                     if (written) {
-                        expirations.set(
-                            `${arenaObj.namespace}|${arenaObj.sceneId}|${arenaObj.object_id}`,
-                            arenaObj,
-                        );
+                        trackExpiry(arenaObj);
                     } else {
                         // The write either rejected or matched nothing, so this message's
                         // deadline is not known to be the stored one. Tracking it anyway is
@@ -506,7 +559,7 @@ async function arenaMsgHandler(topic, message) {
                         // there to expire at all.
                         const stored = await findStoredObject(arenaObj);
                         if (stored && stored.expireAt) {
-                            expirations.set(objKey(stored), stored);
+                            trackExpiry(stored);
                         }
                     }
                 }
@@ -877,25 +930,53 @@ const loadTemplate = async (
  * fails: a retained entry would republish the same delete on every later tick. The
  * persists key is left to the cascade, which keeps it when the delete did not finish so
  * that a later delete can get through and resume the cleanup.
+ *
+ * A tick with nothing due returns without touching the map. The pass otherwise awaits once per
+ * tracked object every second whether or not any deadline has passed, which in steady state is
+ * almost every tick, and that walk grows with the number of live TTL objects rather than with the
+ * number of them that are due. Only earliestExpiry is consulted to decide, and it is rebuilt from
+ * the entries this pass leaves behind, so a pass that does scan pays for the next skip.
+ *
+ * earliestExpiry is cleared before the scan rather than assigned after it, because the pass awaits:
+ * a message handled during one of those awaits can track a sooner deadline than anything this scan
+ * saw, and assigning afterwards would discard it. Both this pass and that handler go through the
+ * same lowering-only write, so whichever runs last still leaves a bound that is early, not late.
+ *
+ * Every entry the scan reaches is folded into the bound before it is tested for being due, not only
+ * the ones passed over. The publish below can reject, and the callback has no catch, so a rejection
+ * propagates out of here with the rest of the map unwalked. Folding first means the entry the scan
+ * stopped on is already in the bound, and that entry is always one that was due, so the bound is
+ * left in the past and the next tick scans again instead of skipping. Recording it only on the
+ * not-due path would leave the bound null for a scan that threw before reaching anything not yet
+ * due, and null is also how "nothing is tracked" is spelled, so every deadline the scan never
+ * reached would be skipped forever.
  * @return {Promise<void>} Settles once every due object has been handled.
  */
 const publishExpires = async () => {
     const now = new Date();
+    if (earliestExpiry === null || now < earliestExpiry) {
+        return;
+    }
+    earliestExpiry = null;
     await asyncMapForEach(expirations, async (obj, key) => {
-        if (obj.expireAt < now) {
-            const msg = {
-                object_id: obj.object_id,
-                action: 'delete',
-            };
-            await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
-                nameSpace: obj.namespace,
-                sceneName: obj.sceneId,
-                userClient: mqttClientOptions.clientId,
-                // eslint-disable-next-line camelcase
-                objectId: obj.object_id,
-            }), JSON.stringify(msg));
-            expirations.delete(key);
-            await deletePersistedObject(obj);
+        noteEarliestExpiry(obj.expireAt);
+        // Negated exactly as it was, rather than rewritten as >=, so an entry carrying no
+        // deadline at all is still passed over instead of being treated as due.
+        if (!(obj.expireAt < now)) {
+            return;
         }
+        const msg = {
+            object_id: obj.object_id,
+            action: 'delete',
+        };
+        await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
+            nameSpace: obj.namespace,
+            sceneName: obj.sceneId,
+            userClient: mqttClientOptions.clientId,
+            // eslint-disable-next-line camelcase
+            objectId: obj.object_id,
+        }), JSON.stringify(msg));
+        expirations.delete(key);
+        await deletePersistedObject(obj);
     });
 };
