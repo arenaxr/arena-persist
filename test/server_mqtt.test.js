@@ -304,6 +304,34 @@ const deliver = async (harness, topic, payload) => {
  */
 const key = (objectId, namespace = NAMESPACE, sceneId = SCENE) => `${namespace}|${sceneId}|${objectId}`;
 
+describe('schema indexes', () => {
+    /**
+     * Every index the schema declares, as its key definition. Schema.prototype.indexes() is
+     * synchronous and reports field-level index: true alongside explicit schema.index() calls, so
+     * this reads the real model the service registered without contacting a database.
+     * @param {Object} harness - The harness from service().
+     * @return {Array<Object>} One key definition per declared index.
+     */
+    const declaredIndexes = (harness) => harness.ArenaObject.schema.indexes().map(([definition]) => definition);
+
+    it('declares no index on realm, which no query filters on', async () => {
+        const harness = await service();
+        assert.ok(!declaredIndexes(harness).some((definition) => 'realm' in definition),
+            'realm carries no index: no query in the service filters or sorts on it, and one service ' +
+            'instance only ever writes the single realm its config names');
+    });
+
+    // Not a claim about this change: a guard for the compound index, which is the one index here
+    // that a query plan actually depends on, so that dropping it cannot pass unnoticed the way an
+    // unused declaration would.
+    it('still declares the compound index the scene-load route needs', async () => {
+        const harness = await service();
+        assert.ok(declaredIndexes(harness).some((definition) =>
+            JSON.stringify(definition) === JSON.stringify({'namespace': 1, 'sceneId': 1, 'attributes.parent': 1})),
+        'the {namespace, sceneId, attributes.parent} index is what removes the scene-load blocking sort');
+    });
+});
+
 describe('arenaMsgHandler message validation', () => {
     const ignored = [
         {

@@ -33,7 +33,7 @@ const arenaSchema = new mongoose.Schema({
     type: {type: String, required: true, index: true},
     attributes: {type: Object, required: true, default: {}},
     expireAt: {type: Date, expires: 0},
-    realm: {type: String, required: true, index: true},
+    realm: {type: String, required: true},
     namespace: {type: String, required: true, index: true, default: 'public'},
     sceneId: {type: String, required: true, index: true},
     private: {type: Boolean},
