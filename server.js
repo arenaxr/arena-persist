@@ -58,7 +58,11 @@ const persists = new Set();
 // reversed. resyncPersists() replays this over the refill. Emptied when a resync window opens.
 const persistsChangedDuringResync = new Map();
 let resyncsInFlight = 0;
-let expirations;
+// Bound once, at module load, and never rebound: every site that prunes or records a deadline
+// holds this same map, including express_server.js's scene-delete prune through forgetExpiry.
+// Nothing can have been recorded before the subscription is up, because arenaMsgHandler is only
+// registered after it, so there is nothing for a (re)connect to reset.
+const expirations = new Map();
 let expireTimer;
 let persistUpdateTimeout;
 
@@ -88,6 +92,22 @@ function forgetPersist(key) {
     if (resyncsInFlight > 0) {
         persistsChangedDuringResync.set(key, false);
     }
+}
+
+/**
+ * Drops one object's pending TTL deadline.
+ *
+ * express_server.js's scene-delete prune is handed this rather than the map itself only to keep
+ * that side injectable, the way forgetPersist already is: the tests drive the route against
+ * collaborators they own. It is a plain delete, with none of forgetPersist's resync bookkeeping,
+ * because nothing ever rebuilds expirations from the database (see #97).
+ *
+ * cascade.js's buildForget is the precedent for pruning both collections together, and it prunes
+ * expirations with exactly this one line.
+ * @param {string} key - namespace|sceneId|object_id whose deadline is no longer pending.
+ */
+function forgetExpiry(key) {
+    expirations.delete(key);
 }
 
 /**
@@ -199,6 +219,7 @@ mongoose.connect(config.mongodb.uri).then(async () => {
         loadTemplate,
         persists,
         forgetPersist,
+        forgetExpiry,
         jose,
     });
 }).catch((err) => {
@@ -289,7 +310,6 @@ async function runMQTT() {
         }), {
             qos: 1,
         }).then(async () => {
-            expirations = new Map();
             if (expireTimer) {
                 await clearIntervalAsync(expireTimer);
             }

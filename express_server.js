@@ -22,6 +22,9 @@ const VERIFY_OPTIONS = {
  * @param {function} [forgetPersist] - drops one key from persists, and keeps it dropped through a
  *     resync of that set that is already in flight. Defaults to a plain delete, which is correct
  *     only where nothing else resyncs the set; server.js passes its own.
+ * @param {function} forgetExpiry - drops one key's pending TTL deadline. A callback rather than
+ *     the expirations map itself, so this side stays injectable the way forgetPersist already is;
+ *     server.js's is a plain delete on the one map it holds for the life of the process.
  * @param {object} jose - jose library instance
  */
 exports.runExpress = async ({
@@ -32,6 +35,7 @@ exports.runExpress = async ({
     loadTemplate,
     persists,
     forgetPersist = (key) => persists.delete(key),
+    forgetExpiry,
     jose,
 }) => {
     const app = express();
@@ -327,15 +331,24 @@ exports.runExpress = async ({
             namespace: req.params.namespace,
         };
         ArenaObject.deleteMany(query).then((result) => {
+            // Inside the then, so the keys go for a delete that actually happened. Pruned ahead
+            // of the write, a rejected delete left every document in place with no key, and each
+            // later update and delete for those objects failed its persists check and was
+            // discarded until the hourly resync put the keys back.
+            const prefix = `${query.namespace}|${query.sceneId}|`;
+            for (const key of persists) {
+                if (key.startsWith(prefix)) {
+                    // Not persists.delete: a resync of the set may already be in flight, and its
+                    // refill would put back anything removed behind forgetPersist's back.
+                    forgetPersist(key);
+                    // The pending deadline goes with the key, keyed identically. An entry that
+                    // outlives its document is exactly what fires an expiry publish and a delete
+                    // for an id that no longer exists.
+                    forgetExpiry(key);
+                }
+            }
             res.json({result: 'success', deletedCount: result.deletedCount});
         }).catch((err) => queryError(res, err));
-        for (const key of persists) {
-            if (key.startsWith(`${query.namespace}|${query.sceneId}|`)) {
-                // Not persists.delete: a resync of the set may already be in flight, and its
-                // refill would put back anything removed behind forgetPersist's back.
-                forgetPersist(key);
-            }
-        }
     });
 
     app.get('/persist/:namespace/:sceneId/:objectId', checkJWTSubs,
