@@ -48,6 +48,10 @@ arenaSchema.index({'attributes.parent': 1}, {sparse: true});
 // missing the key, so a single parentless object in a scene is enough to make it answer with an
 // incomplete result.
 arenaSchema.index({'namespace': 1, 'sceneId': 1, 'attributes.parent': 1});
+// object_id is scene-scoped, not globally unique, so object_id_1 alone still examines every
+// document sharing an id across scenes. This is the filter every MQTT create and update runs, and
+// the single-object REST route.
+arenaSchema.index({'namespace': 1, 'sceneId': 1, 'object_id': 1});
 
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
 
