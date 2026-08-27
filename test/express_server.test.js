@@ -130,6 +130,25 @@ const fakeArenaObject = ({find = [], aggregate = [], distinct = [], counts = [],
 };
 
 /**
+ * Builds a fake ArenaObject model whose every query rejects, standing in for a database that has
+ * gone away mid-request.
+ * @param {Error} err - The error every query rejects with.
+ * @return {Object} The fake model, answering the same query-builder calls as fakeArenaObject.
+ */
+const rejectingArenaObject = (err) => {
+    const rejects = () => {
+        const query = Promise.reject(err);
+        query.sort = () => query;
+        query.exec = () => query;
+        return query;
+    };
+    const throws = async () => {
+        throw err;
+    };
+    return {find: rejects, aggregate: rejects, distinct: rejects, countDocuments: throws, deleteMany: throws};
+};
+
+/**
  * Builds a fake response that records the status and body a handler produced.
  * @return {Object} The fake response; ended is true once json() has been called.
  */
@@ -796,6 +815,52 @@ describe('POST scene clone', () => {
         assert.equal(res.statusCode, 500);
         assert.equal(res.body, undefined);
     });
+});
+
+describe('rejected queries', () => {
+    // Each of these routes used to answer its query with a bare .then() and no .catch(), so one
+    // rejected query became an unhandled rejection: under Node's default
+    // --unhandled-rejections=throw that ends the process, and with the throw suppressed the
+    // request hangs forever with no response.
+    const ROUTES = [
+        {name: 'the namespace listing', method: 'get', path: '/persist/\\!allnamespaces'},
+        {name: 'the global scene listing', method: 'get', path: '/persist/\\!allscenes'},
+        {
+            name: 'the per-namespace scene listing',
+            method: 'get',
+            path: '/persist/:namespace/\\!allscenes',
+            params: {namespace: 'public'},
+        },
+        {
+            name: 'the scene-objects route',
+            method: 'get',
+            path: '/persist/:namespace/:sceneId',
+            params: {namespace: 'public', sceneId: 'lobby'},
+        },
+        {
+            name: 'the single-object route',
+            method: 'get',
+            path: '/persist/:namespace/:sceneId/:objectId',
+            params: {namespace: 'public', sceneId: 'lobby', objectId: 'box-1'},
+        },
+        {
+            name: 'the scene delete',
+            method: 'delete',
+            path: '/persist/:namespace/:sceneId',
+            params: {namespace: 'public', sceneId: 'lobby'},
+        },
+    ];
+
+    for (const {name, method, path, params = {}} of ROUTES) {
+        it(`answers 500 rather than throwing when the query behind ${name} rejects`, async () => {
+            const ArenaObject = rejectingArenaObject(new Error('mongod went away'));
+            const {app} = await startApp({ArenaObject});
+            const {res} = await request(app, {method, path, params});
+            assert.equal(res.statusCode, 500);
+            assert.equal(res.body, undefined);
+            assert.ok(res.ended, 'the client got a response instead of being left hanging');
+        });
+    }
 });
 
 describe('GET health', () => {
