@@ -29,13 +29,24 @@ async function loadJose() {
 }
 
 const arenaSchema = new mongoose.Schema({
-    object_id: {type: String, required: true, index: true},
+    // object_id, namespace and sceneId declare no index of their own, for two different reasons.
+    // namespace and sceneId are covered structurally: namespace leads both compound indexes below,
+    // and no query in the service filters sceneId without also equality-filtering namespace, so
+    // {namespace, sceneId, ...} serves every one of them.
+    // object_id is a weaker case: it is the third field of {namespace, sceneId, object_id} and
+    // leads no index at all. It is covered only because every call site that filters it also
+    // equality-filters namespace and sceneId - true at every such site today, but a query that
+    // filtered object_id on its own would have no index to use and would need one added back.
+    // Keeping any of the three would also leave the planner a candidate whose bounds span a whole
+    // namespace or a whole scene name. At the head of such an index every candidate looks alike
+    // during the planner's 101-result trial, so the wide plan can win the tie and then be cached.
+    object_id: {type: String, required: true},
     type: {type: String, required: true, index: true},
     attributes: {type: Object, required: true, default: {}},
     expireAt: {type: Date, expires: 0},
     realm: {type: String, required: true, index: true},
-    namespace: {type: String, required: true, index: true, default: 'public'},
-    sceneId: {type: String, required: true, index: true},
+    namespace: {type: String, required: true, default: 'public'},
+    sceneId: {type: String, required: true},
     private: {type: Boolean},
     program_id: {type: String},
 }, {
