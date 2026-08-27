@@ -605,7 +605,11 @@ describe('GET scene objects', () => {
         const [query, projection] = ArenaObject.calls.find[0];
         assert.equal(query.namespace, 'public');
         assert.equal(query.sceneId, 'lobby');
-        assert.ok(query.expireAt.$not.$lt >= before, 'the expiry cutoff is the time of the request');
+        // Was assert.ok(query.expireAt.$not.$lt >= before): the negated range is gone, replaced by
+        // the two-branch form in utils.liveObjectsOnly, which keeps the same documents.
+        assert.equal(query.expireAt, undefined, 'no negated range is sent any more');
+        assert.deepEqual(query.$or[0], {expireAt: null}, 'an object with no deadline is served');
+        assert.ok(query.$or[1].expireAt.$gte >= before, 'the expiry cutoff is the time of the request');
         assert.equal(query.type, undefined, 'no type filter unless one was asked for');
         assert.deepEqual(projection, {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0});
     });
@@ -635,7 +639,9 @@ describe('GET scene objects', () => {
         assert.equal(query.object_id, 'box-1');
         assert.equal(query.namespace, 'public');
         assert.equal(query.sceneId, 'lobby');
-        assert.ok(query.expireAt.$not.$lt instanceof Date);
+        assert.equal(query.expireAt, undefined, 'the single-object route sends the same form');
+        assert.deepEqual(query.$or[0], {expireAt: null});
+        assert.ok(query.$or[1].expireAt.$gte instanceof Date);
     });
 });
 

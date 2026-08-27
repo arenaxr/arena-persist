@@ -829,7 +829,14 @@ describe('arenaMsgHandler getPersist', () => {
         const [query, projection] = db.of('find')[0];
         assert.equal(query.namespace, NAMESPACE);
         assert.equal(query.sceneId, SCENE);
-        assert.ok(query.expireAt.$not.$lt instanceof Date, 'expired objects are excluded');
+        // Was assert.ok(query.expireAt.$not.$lt instanceof Date): the predicate is no longer a
+        // negated range, because that gave the planner no index bounds to work with. The two
+        // branches keep the same documents - see the liveObjectsOnly tests in utils.test.js.
+        assert.equal(query.expireAt, undefined, 'no negated range is sent any more');
+        assert.deepEqual(query.$or[0], {expireAt: null},
+            'an object with no deadline, or a null one, is served');
+        assert.ok(query.$or[1].expireAt.$gte instanceof Date, 'and one whose deadline is still ahead');
+        assert.equal(query.$or.length, 2);
         assert.equal(query.type, undefined);
         assert.deepEqual(projection, {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0});
         assert.equal(harness.published.length, 1);
@@ -855,6 +862,92 @@ describe('arenaMsgHandler getPersist', () => {
             object_id: 'req-1', action: 'getPersist', type: 'object', data: {},
         });
         assert.deepEqual(db.calls.map(([name]) => name), ['find']);
+    });
+
+    /**
+     * Runs one getPersist request with find() replaced, restoring the recorder afterwards.
+     * @param {Object} harness - The harness from service().
+     * @param {function} find - Stand-in for the model's find, called with the query arguments.
+     * @return {Promise<void>} Settles once the handler has resolved.
+     */
+    const withFind = async (harness, find) => {
+        const recorded = harness.ArenaObject.find;
+        harness.ArenaObject.find = find;
+        try {
+            await deliver(harness, objectTopic('req-1'), {
+                object_id: 'req-1', action: 'getPersist', type: 'object', data: {},
+            });
+        } finally {
+            harness.ArenaObject.find = recorded;
+        }
+    };
+
+    it('waits for the query, so the answer is published before the handler resolves', async () => {
+        const harness = await service();
+        const rows = [{object_id: 'box-1'}];
+        // A query that settles a macrotask later. Unawaited, the handler resolved first and the
+        // publish happened after arenaMsgHandler had already returned to the MQTT client.
+        await withFind(harness, (...args) => {
+            db.calls.push(['find', args]);
+            const query = new Promise((resolve) => setImmediate(() => resolve(rows)));
+            query.sort = () => query;
+            query.exec = () => query;
+            return query;
+        });
+        assert.equal(harness.published.length, 1, 'the answer is out by the time the handler is done');
+        assert.deepEqual(JSON.parse(harness.published[0].payload).data, rows);
+    });
+
+    it('logs a rejected query rather than leaving an unhandled rejection behind', async () => {
+        const harness = await service();
+        await withFind(harness, (...args) => {
+            db.calls.push(['find', args]);
+            const query = Promise.reject(new Error('mongo unavailable'));
+            query.sort = () => query;
+            query.exec = () => query;
+            return query;
+        });
+        assert.deepEqual(harness.published, [], 'nothing is answered on a query that failed');
+        assert.ok(logs.log.some((line) => line.includes('Error answering getPersist')),
+            'and the failure is logged where the process can survive it');
+    });
+
+    /**
+     * Runs one getPersist request with the client's publish replaced, restoring it afterwards.
+     * @param {Object} harness - The harness from service().
+     * @param {function} publish - Stand-in for the client's publish, called with topic and payload.
+     * @return {Promise<void>} Settles once the handler has resolved.
+     */
+    const withPublish = async (harness, publish) => {
+        const recorded = harness.mqttClient.publish;
+        harness.mqttClient.publish = publish;
+        try {
+            await deliver(harness, objectTopic('req-1'), {
+                object_id: 'req-1', action: 'getPersist', type: 'object', data: {},
+            });
+        } finally {
+            harness.mqttClient.publish = recorded;
+        }
+    };
+
+    it('logs a rejected publish rather than leaving an unhandled rejection behind', async () => {
+        const harness = await service();
+        db.findRows.push([{object_id: 'box-1'}]);
+        const attempts = [];
+        // The query half of this is pinned by the test above. This is the other half: the publish
+        // is inside the same try, and it is awaited, so a broker that rejects the send is caught
+        // and logged too. Without the await the handler resolves before the send settles, the
+        // catch is out of scope by then, and the rejection escapes the process unheard - which is
+        // the failure this change exists to remove, so it is asserted rather than assumed.
+        await withPublish(harness, async (topic, payload) => {
+            attempts.push({topic, payload});
+            throw new Error('mqtt disconnected');
+        });
+        assert.equal(attempts.length, 1, 'the answer was attempted');
+        assert.deepEqual(JSON.parse(attempts[0].payload).data, [{object_id: 'box-1'}],
+            'with the rows the query returned, so the failure is in the send and not before it');
+        assert.ok(logs.log.some((line) => line.includes('Error answering getPersist')),
+            'and the rejection lands in the handler catch, where the process can survive it');
     });
 });
 
