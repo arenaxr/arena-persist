@@ -97,13 +97,14 @@ const fakeQuery = (rows) => {
  * @param {Array} [results.find] - Rows returned by find().
  * @param {Array} [results.aggregate] - Rows returned by aggregate().
  * @param {Array} [results.distinct] - Values returned by distinct().
- * @param {Array<number>} [results.counts] - countDocuments() answers, consumed in call order.
+ * @param {Array<boolean>} [results.existing] - exists() answers, consumed in call order: true
+ *     hands back a document stub the way mongoose does, false hands back null.
  * @param {number} [results.deletedCount] - deletedCount reported by deleteMany().
  * @return {Object} The fake model, with a calls record keyed by method name.
  */
-const fakeArenaObject = ({find = [], aggregate = [], distinct = [], counts = [], deletedCount = 0} = {}) => {
-    const calls = {find: [], aggregate: [], distinct: [], countDocuments: [], deleteMany: []};
-    const pending = [...counts];
+const fakeArenaObject = ({find = [], aggregate = [], distinct = [], existing = [], deletedCount = 0} = {}) => {
+    const calls = {find: [], aggregate: [], distinct: [], exists: [], countDocuments: [], deleteMany: []};
+    const pending = [...existing];
     return {
         calls,
         find: (...args) => {
@@ -118,9 +119,16 @@ const fakeArenaObject = ({find = [], aggregate = [], distinct = [], counts = [],
             calls.distinct.push(args);
             return fakeQuery(distinct);
         },
+        exists: async (...args) => {
+            calls.exists.push(args);
+            return (pending.length ? pending.shift() : false) ? {_id: 'some-id'} : null;
+        },
+        // No route counts any more, and this stays only so that one going back to counting is
+        // caught by an assertion instead of by a TypeError. Its answer is deliberately a number
+        // no test expects to see reported.
         countDocuments: async (...args) => {
             calls.countDocuments.push(args);
-            return pending.length ? pending.shift() : 0;
+            return 99;
         },
         deleteMany: async (...args) => {
             calls.deleteMany.push(args);
@@ -692,20 +700,25 @@ describe('POST scene clone', () => {
      * Posts a clone request as a token holding read and write rights over both scenes.
      * @param {Object} body - The request body.
      * @param {Object} [options] - Test options.
-     * @param {Array<number>} [options.counts] - countDocuments answers: source then target.
+     * @param {Array<boolean>} [options.existing] - exists() answers: source scene, then target.
+     * @param {number} [options.cloned] - How many objects the injected clone reports having made.
      * @param {Array<string>} [options.subs] - Read rights, defaulting to the whole realm.
      * @param {function} [options.loadTemplate] - Clone implementation to inject.
      * @return {Promise<Object>} The response, the fake model and the recorded clone calls.
      */
-    const post = async (body, {counts = [1, 0], subs = ['realm/#'], loadTemplate} = {}) => {
+    const post = async (
+        body,
+        {existing = [true, false], cloned = 0, subs = ['realm/#'], loadTemplate} = {},
+    ) => {
         const cloneCalls = [];
-        const ArenaObject = fakeArenaObject({counts});
+        const ArenaObject = fakeArenaObject({existing});
         const {app} = await startApp({
             ArenaObject,
             jwk: JWK,
             jose: fakeJose({subs, publ: ['realm/#']}),
             loadTemplate: loadTemplate ?? (async (...args) => {
                 cloneCalls.push(args);
+                return cloned;
             }),
         });
         const {res} = await request(app, {
@@ -719,17 +732,28 @@ describe('POST scene clone', () => {
     };
 
     it('clones the source scene into an empty target', async () => {
-        const {res, cloneCalls, ArenaObject} = await post(SOURCE, {counts: [3, 0]});
-        assert.deepEqual(res.body, {result: 'success', objectsCloned: 3});
+        const {res, cloneCalls, ArenaObject} = await post(SOURCE, {existing: [true, false], cloned: 3});
+        assert.deepEqual(res.body, {result: 'success', objectsCloned: 3},
+            'the number reported is the one the clone read off the source scene itself');
         assert.equal(cloneCalls.length, 1);
         assert.deepEqual(cloneCalls[0], [
             'clone', 'realm', 'public', 'template', 'public', 'copy',
             {noPrefix: true, persist: true, noParent: true},
         ], 'the clone keeps the original object ids, persists them and wraps them in no container');
-        assert.deepEqual(ArenaObject.calls.countDocuments, [
+        assert.deepEqual(ArenaObject.calls.exists, [
             [{namespace: 'public', sceneId: 'template'}],
             [{namespace: 'public', sceneId: 'copy'}],
-        ], 'the source is counted first, then the target');
+        ], 'the source is probed first, then the target, and neither is counted');
+    });
+
+    it('reports the number the clone made, rather than one counted before it started', async () => {
+        const {res, ArenaObject} = await post(SOURCE, {existing: [true, false], cloned: 12});
+        assert.deepEqual(res.body, {result: 'success', objectsCloned: 12});
+        assert.equal(ArenaObject.calls.countDocuments.length, 0,
+            'nothing is counted: the number comes from the clone, not from a pass over the scene');
+        assert.equal(ArenaObject.calls.exists.length, 2,
+            'the two emptiness probes are the only queries the route runs of its own');
+        assert.equal(ArenaObject.calls.find.length, 0, 'and it never re-reads the source scene');
     });
 
     it('refuses a body with no action', async () => {
@@ -753,7 +777,7 @@ describe('POST scene clone', () => {
             const {res, ArenaObject} = await post(body);
             assert.equal(res.statusCode, 400);
             assert.equal(res.body, 'No namespace or sceneId specified');
-            assert.equal(ArenaObject.calls.countDocuments.length, 0, 'nothing is counted');
+            assert.equal(ArenaObject.calls.exists.length, 0, 'nothing is queried');
         });
     }
 
@@ -761,34 +785,36 @@ describe('POST scene clone', () => {
         const {res, ArenaObject, cloneCalls} = await post(SOURCE, {subs: [sceneTopic('public', 'copy')]});
         assert.equal(res.statusCode, 401);
         assert.equal(res.body, 'You have not been granted read access');
-        assert.equal(ArenaObject.calls.countDocuments.length, 0);
+        assert.equal(ArenaObject.calls.exists.length, 0);
         assert.equal(cloneCalls.length, 0);
     });
 
     it('answers 404 for an empty source scene', async () => {
-        const {res, cloneCalls} = await post(SOURCE, {counts: [0, 0]});
+        const {res, cloneCalls} = await post(SOURCE, {existing: [false, false]});
         assert.equal(res.statusCode, 404);
         assert.equal(res.body, 'The source scene is empty!');
         assert.equal(cloneCalls.length, 0);
     });
 
     it('answers 409 for a target scene that already holds objects', async () => {
-        const {res, cloneCalls} = await post(SOURCE, {counts: [3, 5]});
+        const {res, cloneCalls} = await post(SOURCE, {existing: [true, true]});
         assert.equal(res.statusCode, 409);
         assert.equal(res.body, 'The target scene is not empty!');
         assert.equal(cloneCalls.length, 0);
     });
 
-    it('clones into a non-empty target when the caller opts in, without counting it', async () => {
-        const {res, cloneCalls, ArenaObject} = await post({...SOURCE, allowNonEmptyTarget: true}, {counts: [3]});
+    it('clones into a non-empty target when the caller opts in, without probing it', async () => {
+        const {res, cloneCalls, ArenaObject} = await post(
+            {...SOURCE, allowNonEmptyTarget: true}, {existing: [true], cloned: 3});
         assert.deepEqual(res.body, {result: 'success', objectsCloned: 3});
         assert.equal(cloneCalls.length, 1);
-        assert.equal(ArenaObject.calls.countDocuments.length, 1, 'only the source is counted');
+        assert.deepEqual(ArenaObject.calls.exists, [[{namespace: 'public', sceneId: 'template'}]],
+            'only the source is probed');
     });
 
     it('answers 500 when the clone itself fails', async () => {
         const {res} = await post(SOURCE, {
-            counts: [3, 0],
+            existing: [true, false],
             loadTemplate: async () => {
                 throw new Error('mongo went away');
             },
