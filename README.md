@@ -19,6 +19,18 @@ persisted objects to load upon entering any scene.
 Note that updating major versions of mongodb will require setting the appropriate compatibility version
 per [documentation](https://www.mongodb.com/docs/manual/release-notes/8.0-upgrade-standalone/#prerequisites)
 
+## Operations
+
+One-time steps a deployment needs, which the service does not perform itself.
+
+- **Pending: drop the `realm_1` index.** `realm` is no longer declared as indexed, but mongoose only
+  ever creates indexes and never drops them, so a database that already has `realm_1` keeps it and
+  keeps paying to maintain it on every write. Run once per deployment:
+  `db.arenaobjects.dropIndex('realm_1')`. Alternatively `ArenaObject.syncIndexes()` reconciles the
+  collection with the schema in one call; on this schema it drops exactly `realm_1` and leaves the
+  other eight indexes alone. Both take a brief exclusive lock on the collection, so neither belongs
+  in application startup.
+
 ## Usage
 
 ### Persistence
