@@ -1694,3 +1694,61 @@ describe('persists set ownership', () => {
             'and the refresh that follows works normally');
     });
 });
+
+describe('schema single-field indexes', () => {
+    /**
+     * Every index the schema declares, as its key definition. Schema.prototype.indexes() is
+     * synchronous and reports field-level index: true alongside explicit schema.index() calls, so
+     * this reads the real model the service registered without contacting a database.
+     * @param {Object} harness - The harness from service().
+     * @return {Array<Object>} One key definition per declared index.
+     */
+    const declaredIndexes = (harness) => harness.ArenaObject.schema.indexes().map(([definition]) => definition);
+
+    /**
+     * Whether any declared index is on exactly the one given field.
+     * @param {Object} harness - The harness from service().
+     * @param {string} field - Field name to look for.
+     * @return {boolean} True if some index has that field as its only key.
+     */
+    const hasSingleFieldIndex = (harness, field) => declaredIndexes(harness).some((definition) => {
+        const keys = Object.keys(definition);
+        return keys.length === 1 && keys[0] === field;
+    });
+
+    it('declares no index on object_id alone', async () => {
+        const harness = await service();
+        assert.ok(!hasSingleFieldIndex(harness, 'object_id'),
+            'object_id carries no index of its own: every query that filters it also equality-filters ' +
+            'namespace and sceneId, so all of them are served by the {namespace, sceneId, object_id} ' +
+            'index, whose prefix an object_id-only index can never beat');
+    });
+
+    it('declares no index on namespace alone', async () => {
+        const harness = await service();
+        assert.ok(!hasSingleFieldIndex(harness, 'namespace'),
+            'namespace carries no index of its own: namespace is the leading field of both compound ' +
+            'indexes, so a namespace-only filter is already served by their prefix, and the ' +
+            'single-field index only adds a candidate plan that scans a whole namespace');
+    });
+
+    it('declares no index on sceneId alone', async () => {
+        const harness = await service();
+        assert.ok(!hasSingleFieldIndex(harness, 'sceneId'),
+            'sceneId carries no index of its own: no query in the service filters sceneId without ' +
+            'also equality-filtering namespace, so every one of them is served by the compound ' +
+            'indexes, and a sceneId-only index only adds a candidate plan whose bounds span that ' +
+            'scene name in every namespace');
+    });
+
+    // Not a claim about this change: guards for the two compound indexes those assertions rely on,
+    // so that dropping one cannot quietly turn the two above into statements about nothing.
+    it('still declares both compound indexes the assertions above rely on', async () => {
+        const harness = await service();
+        const declared = declaredIndexes(harness).map((definition) => JSON.stringify(definition));
+        assert.ok(declared.includes(JSON.stringify({'namespace': 1, 'sceneId': 1, 'attributes.parent': 1})),
+            'the {namespace, sceneId, attributes.parent} index serves the scene reads and their sort');
+        assert.ok(declared.includes(JSON.stringify({'namespace': 1, 'sceneId': 1, 'object_id': 1})),
+            'the {namespace, sceneId, object_id} index is what replaces the object_id-only index');
+    });
+});

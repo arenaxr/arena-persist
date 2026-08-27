@@ -19,6 +19,26 @@ persisted objects to load upon entering any scene.
 Note that updating major versions of mongodb will require setting the appropriate compatibility version
 per [documentation](https://www.mongodb.com/docs/manual/release-notes/8.0-upgrade-standalone/#prerequisites)
 
+### Indexes that must be dropped by hand
+
+Mongoose only ever *creates* indexes; removing an index from the schema never drops it from a
+database that already has it. A database created before these indexes were removed from the schema
+keeps them, and keeps paying to maintain them on every write. Once per deployment:
+
+```
+db.arenaobjects.dropIndex('object_id_1')
+db.arenaobjects.dropIndex('namespace_1')
+db.arenaobjects.dropIndex('sceneId_1')
+```
+
+Each is redundant against the compound indexes `{namespace, sceneId, attributes.parent}` and
+`{namespace, sceneId, object_id}`, and leaving them in place also leaves the query planner a
+candidate whose bounds span a whole namespace or a whole scene name.
+
+`ArenaObject.syncIndexes()` reconciles the collection with the schema in one call and drops the same
+three. Either form takes a brief exclusive lock on the collection, so neither belongs in application
+startup.
+
 ## Usage
 
 ### Persistence
