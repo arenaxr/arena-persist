@@ -210,10 +210,17 @@ const runHandler = (handler, req, res) => new Promise((resolve, reject) => {
 
 /**
  * Starts the service against fakes and returns the app it built.
- * @param {Object} [deps] - Overrides for the injected collaborators.
- * @return {Promise<Object>} The fake app, plus the collaborators it was started with.
+ *
+ * expirations is not itself an injected collaborator: server.js hands over a forgetExpiry
+ * callback, keeping the map on its own side. The fixture takes a map, builds the callback the
+ * same way, and returns both, so a test can assert on the map or replace the callback.
+ * @param {Object} [deps] - Overrides for the injected collaborators, plus expirations.
+ * @param {Map} [deps.expirations] - Pending TTL deadlines the default forgetExpiry prunes.
+ * @return {Promise<Object>} The fake app, plus the collaborators it was started with and the
+ *     expirations map behind forgetExpiry.
  */
 const startApp = async (deps = {}) => {
+    const {expirations = new Map(), ...overrides} = deps;
     const collaborators = {
         ArenaObject: fakeArenaObject(),
         mqttClient: {connected: true},
@@ -221,11 +228,12 @@ const startApp = async (deps = {}) => {
         mongooseConnection: {readyState: 1},
         loadTemplate: async () => {},
         persists: new Set(),
+        forgetExpiry: (key) => expirations.delete(key),
         jose: {jwtVerify: async () => ({payload: {}})},
-        ...deps,
+        ...overrides,
     };
     await runExpress(collaborators);
-    return {app: createdApps[createdApps.length - 1], ...collaborators};
+    return {app: createdApps[createdApps.length - 1], expirations, ...collaborators};
 };
 
 /**
@@ -669,23 +677,41 @@ describe('DELETE scene', () => {
         assert.deepEqual(ArenaObject.calls.deleteMany, [[{namespace: 'public', sceneId: 'lobby'}]]);
     });
 
-    it('forgets the in-memory keys of that scene only', async () => {
-        const persists = new Set([
+    it('forgets the in-memory keys of that scene only, in both collections', async () => {
+        const keys = [
             'public|lobby|box-1',
             'public|lobby|box-2',
             'public|lobbyextra|box-3',
             'public|other|box-4',
             'private|lobby|box-5',
-        ]);
-        const {app} = await startApp({persists});
+        ];
+        const persists = new Set(keys);
+        const expirations = new Map(keys.map((key) => [key, {object_id: key.split('|')[2]}]));
+        // Samples both collections while the delete is still in flight: the prune has to happen
+        // on the delete that resolved, not alongside the one that was merely started.
+        let inFlight;
+        const ArenaObject = fakeArenaObject({deletedCount: 2});
+        ArenaObject.deleteMany = async (...args) => {
+            ArenaObject.calls.deleteMany.push(args);
+            await new Promise((resolve) => setImmediate(resolve));
+            inFlight = {persists: persists.size, expirations: expirations.size};
+            return {deletedCount: 2};
+        };
+        const {app} = await startApp({ArenaObject, persists, expirations});
         await request(app, {
             method: 'delete', path: '/persist/:namespace/:sceneId', params: {namespace: 'public', sceneId: 'lobby'},
         });
-        assert.deepEqual([...persists].sort(), [
+        assert.deepEqual(inFlight, {persists: 5, expirations: 5},
+            'no key is dropped until the delete has actually resolved');
+        const survivors = [
             'private|lobby|box-5',
             'public|lobbyextra|box-3',
             'public|other|box-4',
-        ], 'a scene whose name merely shares a prefix keeps its keys');
+        ];
+        assert.deepEqual([...persists].sort(), survivors,
+            'a scene whose name merely shares a prefix keeps its keys');
+        assert.deepEqual([...expirations.keys()].sort(), survivors,
+            'and the pending deadlines go by the same prefix, so none outlives its document');
     });
 
     it('removes those keys through the injected forgetPersist, not out of the set itself', async () => {
@@ -700,6 +726,47 @@ describe('DELETE scene', () => {
         assert.deepEqual([...persists].sort(), ['public|lobby|box-1', 'public|lobby|box-2', 'public|other|box-3'],
             'and the route never reaches past it into the set, so a removal the caller has to ' +
             'record cannot be made behind its back');
+    });
+
+    it('prunes both collections even when the delete matched nothing', async () => {
+        // A delete that removed zero documents is still a delete that happened: the keys named a
+        // scene that is now empty either way, so the prune is not conditional on deletedCount.
+        const persists = new Set(['public|lobby|box-1', 'public|other|box-2']);
+        const expirations = new Map([['public|lobby|box-1', {object_id: 'box-1'}]]);
+        const ArenaObject = fakeArenaObject({deletedCount: 0});
+        const {app} = await startApp({ArenaObject, persists, expirations});
+        const {res} = await request(app, {
+            method: 'delete', path: '/persist/:namespace/:sceneId', params: {namespace: 'public', sceneId: 'lobby'},
+        });
+        assert.deepEqual(res.body, {result: 'success', deletedCount: 0});
+        assert.deepEqual([...persists], ['public|other|box-2'],
+            'a key whose document was already gone still goes');
+        assert.deepEqual([...expirations.keys()], [], 'and so does its pending deadline');
+    });
+
+    it('leaves both collections untouched when the delete rejects', async () => {
+        const persists = new Set(['public|lobby|box-1', 'public|lobby|box-2', 'public|other|box-3']);
+        const expirations = new Map([
+            ['public|lobby|box-1', {object_id: 'box-1'}],
+            ['public|other|box-3', {object_id: 'box-3'}],
+        ]);
+        const forgotten = [];
+        const ArenaObject = rejectingArenaObject(new Error('mongod went away'));
+        const {app} = await startApp({
+            ArenaObject, persists, expirations, forgetPersist: (key) => forgotten.push(key),
+        });
+        const {res} = await request(app, {
+            method: 'delete', path: '/persist/:namespace/:sceneId', params: {namespace: 'public', sceneId: 'lobby'},
+        });
+        assert.equal(res.statusCode, 500);
+        assert.deepEqual(forgotten, [],
+            'the documents are all still there, so their keys have to stay: an update or a ' +
+            'delete for one of them checks persists first and would otherwise be discarded');
+        assert.deepEqual([...persists].sort(),
+            ['public|lobby|box-1', 'public|lobby|box-2', 'public|other|box-3']);
+        assert.deepEqual([...expirations.keys()].sort(),
+            ['public|lobby|box-1', 'public|other|box-3'],
+            'and the deadlines stay with them, since the objects they belong to were not deleted');
     });
 });
 
