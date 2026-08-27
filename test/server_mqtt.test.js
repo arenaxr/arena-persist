@@ -886,6 +886,75 @@ describe('publishExpires', () => {
         harness.persists.clear();
     };
 
+    /**
+     * Runs one expiry pass and reports how many microtask turns it took to settle.
+     *
+     * A pass with nothing due is externally silent either way — it publishes nothing and queries
+     * nothing — so the only thing separating a skipped tick from a scanned one is the work it does
+     * before deciding, and that work is exactly what these tests are about. asyncMapForEach awaits
+     * once per tracked object, so the turn count is proportional to how much of the map was walked.
+     * Nothing else in the service runs during a pass, so the turns are this pass's own.
+     *
+     * The absolute number is an implementation detail and is never asserted on; only whether it
+     * grows with the number of tracked objects is.
+     * @param {Object} harness - The harness from service().
+     * @return {Promise<number>} Microtask turns the pass took to settle.
+     */
+    const turnsToSettle = async (harness) => {
+        let turns = 0;
+        let running = true;
+        const count = () => {
+            if (!running) {
+                return;
+            }
+            turns++;
+            Promise.resolve().then(count);
+        };
+        Promise.resolve().then(count);
+        await harness.publishExpires();
+        running = false;
+        return turns;
+    };
+
+    it('costs the same on a tick with nothing due, however many objects are tracked', async () => {
+        const harness = await service();
+        await drain(harness);
+        await createWithTtl(harness, 'not-due-0', 3600);
+        const withOne = await turnsToSettle(harness);
+        for (let i = 1; i <= 40; i++) {
+            await createWithTtl(harness, `not-due-${i}`, 3600);
+        }
+        db.reset();
+        harness.published.length = 0;
+        assert.equal(await turnsToSettle(harness), withOne,
+            'no deadline has passed, so the tracked objects are not walked');
+        assert.deepEqual(harness.published, []);
+        assert.deepEqual(db.calls, [], 'and nothing is deleted');
+    });
+
+    it('does do the walk on a tick that has something due', async () => {
+        const harness = await service();
+        await drain(harness);
+        await createWithTtl(harness, 'not-due-a', 3600);
+        const idle = await turnsToSettle(harness);
+        await createWithTtl(harness, 'due-1', -1);
+        db.reset();
+        harness.published.length = 0;
+        assert.ok(await turnsToSettle(harness) > idle, 'a due deadline is not skipped');
+        assert.equal(harness.published.length, 1);
+    });
+
+    it('takes the earliest deadline, so one tracked after a later one is still not skipped', async () => {
+        const harness = await service();
+        await drain(harness);
+        await createWithTtl(harness, 'far-off-1', 3600);
+        await createWithTtl(harness, 'due-2', -1);
+        db.reset();
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published.map(({payload}) => JSON.parse(payload).object_id), ['due-2']);
+    });
+
     it('publishes a delete for an expired object on its own scene topic', async () => {
         const harness = await service();
         await drain(harness);
@@ -978,6 +1047,18 @@ describe('publishExpires', () => {
         assert.deepEqual(db.of('deleteMany').map(([filter]) => filter['object_id'].$in),
             [['child'], ['grandchild']], 'and both levels are deleted by id');
         assert.deepEqual([...harness.persists], [], 'so no descendant keeps its persists key');
+    });
+
+    it('keeps the earliest deadline when a later one is tracked after it', async () => {
+        const harness = await service();
+        await drain(harness);
+        await createWithTtl(harness, 'due-3', -1);
+        await createWithTtl(harness, 'far-off-2', 3600);
+        db.reset();
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published.map(({payload}) => JSON.parse(payload).object_id), ['due-3'],
+            'the later deadline tracked afterwards must not raise the bound past the due one');
     });
 });
 
