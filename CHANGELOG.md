@@ -4,6 +4,23 @@
 - Pin GitHub Actions in CI workflows to exact release tag commit SHAs with inline tag comments for Dependabot SemVer support.
 
 
+## [2.3.0](https://github.com/arenaxr/arena-persist/compare/v2.2.1...v2.3.0) (2026-09-03)
+
+
+### Features
+
+* **ci:** align action commit SHAs to exact release tags for Dependabot SemVer support ([322e4da](https://github.com/arenaxr/arena-persist/commit/322e4da0cec15eba88a9b0a3999eb111557ef53c))
+* **ci:** configure dependabot, pin workflow actions to SHAs, and add agent/contributing docs ([91811c6](https://github.com/arenaxr/arena-persist/commit/91811c61fa30e4bdbe8673e9ebfaa42e80800856))
+* **ci:** configure dependabot, pin workflow actions to SHAs, and add agent/contributing docs ([1b9616e](https://github.com/arenaxr/arena-persist/commit/1b9616ef1387dae230565d56d5179a3cbfa72365))
+
+
+### Bug Fixes
+
+* keep one persists set for the life of the process ([#93](https://github.com/arenaxr/arena-persist/issues/93)) ([7fea0df](https://github.com/arenaxr/arena-persist/commit/7fea0df6dd4cdce87311a363c158cfc10cef2883))
+* pass loadTemplate its arguments in signature order and honour the requested pose ([#91](https://github.com/arenaxr/arena-persist/issues/91)) ([c5345b9](https://github.com/arenaxr/arena-persist/commit/c5345b9a56c44f1692c65fd909d882757b1766d8))
+* recursively delete descendants of a deleted persisted object ([#86](https://github.com/arenaxr/arena-persist/issues/86)) ([72b519b](https://github.com/arenaxr/arena-persist/commit/72b519b646fa7b5cb4ec25cfe2af5b52e74aa950))
+* take create and update bookkeeping from what the database holds ([#92](https://github.com/arenaxr/arena-persist/issues/92)) ([007ed34](https://github.com/arenaxr/arena-persist/commit/007ed34c88ab85032ed3539fbf09ca4a1b2d48ad))
+
 ## [2.2.1](https://github.com/arenaxr/arena-persist/compare/v2.2.0...v2.2.1) (2026-05-09)
 
 
