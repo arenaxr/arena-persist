@@ -3,6 +3,7 @@ const MQTTPattern = require('mqtt-pattern');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const {TOPICS} = require('./topics');
+const {liveObjectsOnly} = require('./utils');
 
 // TODO: Does any of this need to be parameterized?
 const VERIFY_OPTIONS = {
@@ -297,7 +298,7 @@ exports.runExpress = async ({
         const query = {
             sceneId: req.params.sceneId,
             namespace: req.params.namespace,
-            expireAt: {$not: {$lt: now}},
+            ...liveObjectsOnly(now),
         };
         if (req.query.type) {
             query.type = req.query.type;
@@ -334,7 +335,7 @@ exports.runExpress = async ({
                 namespace: req.params.namespace,
                 sceneId: req.params.sceneId,
                 object_id: req.params.objectId,
-                expireAt: {$not: {$lt: now}},
+                ...liveObjectsOnly(now),
             }, {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0},
             ).then((msgs) => {
                 res.json(msgs);
