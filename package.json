@@ -13,8 +13,8 @@
     "async-mqtt": "2.6.3",
     "cookie-parser": "1.4.7",
     "express": "5.2.1",
-    "jose": "6.2.10",
-    "mongoose": "9.9.3",
+    "jose": "6.2.12",
+    "mongoose": "9.11.0",
     "mqtt-pattern": "2.1.1",
     "set-interval-async": "3.0.3"
   },
