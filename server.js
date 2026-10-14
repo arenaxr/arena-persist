@@ -43,6 +43,11 @@ const arenaSchema = new mongoose.Schema({
     minimize: false, // Try to enforce attributes being valid object for $set and $unset
 });
 arenaSchema.index({'attributes.parent': 1}, {sparse: true});
+// Serves the scene-load route's {namespace, sceneId} filter and its sort on attributes.parent in
+// one index. The sparse index above cannot order that sort: a sparse index omits every document
+// missing the key, so a single parentless object in a scene is enough to make it answer with an
+// incomplete result.
+arenaSchema.index({'namespace': 1, 'sceneId': 1, 'attributes.parent': 1});
 
 const ArenaObject = mongoose.model('ArenaObject', arenaSchema);
 
