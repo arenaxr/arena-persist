@@ -46,9 +46,15 @@ const CASCADE_BATCH_SIZE = 100;
 
 /**
  * Yields to the event loop so pending MQTT messages and timers can be serviced.
+ *
+ * setImmediate, not setTimeout(resolve, 0): a 0 ms timer is clamped to a timer tick, costing on
+ * the order of a millisecond per yield against microseconds for setImmediate — a factor of several
+ * hundred, and one that drifts with hardware and Node version. This is called once per batch, so
+ * on a deep cascade that clamp is most of the wall time. Both hand control back to the event loop
+ * before the walk continues, so the anti-blocking property below is unchanged.
  * @return {Promise<void>} Promise that settles on a later tick.
  */
-const yieldToEventLoop = () => new Promise((resolve) => setTimeout(resolve, 0));
+const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
 
 /**
  * Attaches what a walk had already done to the error that interrupted it.
