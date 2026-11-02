@@ -856,6 +856,29 @@ const loadTemplate = async (
     });
 };
 
+/**
+ * Publishes a delete for every tracked object whose deadline has passed, and removes it.
+ *
+ * The removal goes through deletePersistedObject, the same cascading delete an explicit
+ * delete message uses, so an expiry removes the expired document itself and every
+ * descendant beneath it rather than only the objects directly parented to it. Expiring an
+ * object used to leave the object's own document for MongoDB's TTL monitor and its
+ * grandchildren for nobody, so a client told the object was gone waited up to a minute for
+ * the database to agree and the grandchildren stayed for good.
+ *
+ * That walk is several bounded queries where this was one unbounded one, and
+ * setIntervalAsync/dynamic does not overlap runs, so a large subtree stalls the sweep for
+ * as long as it takes. This is deliberate: the queries it replaces were uncapped, and the
+ * caps, the batching and the event loop yield in cascade.js are what keep one expiry from
+ * becoming one very long write.
+ *
+ * The expirations entry is dropped before the delete starts, not by the cascade's own
+ * bookkeeping, so an object is published for exactly once even when the delete below it
+ * fails: a retained entry would republish the same delete on every later tick. The
+ * persists key is left to the cascade, which keeps it when the delete did not finish so
+ * that a later delete can get through and resume the cleanup.
+ * @return {Promise<void>} Settles once every due object has been handled.
+ */
 const publishExpires = async () => {
     const now = new Date();
     await asyncMapForEach(expirations, async (obj, key) => {
@@ -872,12 +895,7 @@ const publishExpires = async () => {
                 objectId: obj.object_id,
             }), JSON.stringify(msg));
             expirations.delete(key);
-            forgetPersist(key);
-            await ArenaObject.deleteMany({
-                'attributes.parent': obj.object_id,
-                'namespace': obj.namespace,
-                'sceneId': obj.sceneId,
-            });
+            await deletePersistedObject(obj);
         }
     });
 };
