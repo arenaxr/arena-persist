@@ -638,19 +638,21 @@ async function handleLoadTemplate(arenaObj) {
             rotation: a.rotation,
         },
     };
-    // Make sure the template isn't empty
-    if (await ArenaObject.countDocuments({
+    // Make sure the template isn't empty. exists(), not countDocuments(): both of these are
+    // only ever compared against zero, and an exact count has to walk every matching index key
+    // to produce a number nothing here reads.
+    if (!await ArenaObject.exists({
         namespace: a.templateNamespace,
         sceneId: a.templateSceneId,
-    }) === 0) {
+    })) {
         return;
     }
     if (a.instanceId) { // Make sure this instance does not exist in target
-        if (await ArenaObject.countDocuments({
+        if (await ArenaObject.exists({
             namespace: arenaObj.namespace,
             sceneId: arenaObj.sceneId,
             object_id: `${a.templateNamespace}|${a.templateSceneId}::${a.instanceId}`,
-        }) > 0) {
+        })) {
             return;
         }
     }
@@ -784,6 +786,11 @@ const poseAxes = (component, name) => {
  *     anything else keeps the default for that axis. Omit it to leave opts.attributes alone.
  * @param {Object} [opts.pose.position] - position of the Template container
  * @param {Object} [opts.pose.rotation] - rotation of the Template container
+ * @return {Promise<number>} How many template objects it read from the template scene and
+ *     attempted to clone, not counting the container. Read off the find this already performs, so
+ *     a caller wanting the number does not have to count the same documents a second time. Not a
+ *     count of successful writes: createArenaObj logs and swallows a failed upsert, so an object
+ *     whose write failed is still counted here.
  */
 const loadTemplate = async (
     instanceId,
@@ -854,6 +861,7 @@ const loadTemplate = async (
             obj.attributes.ttl,
         );
     });
+    return templateObjs.length;
 };
 
 const publishExpires = async () => {
