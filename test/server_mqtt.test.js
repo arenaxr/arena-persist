@@ -190,9 +190,8 @@ const startServer = async () => {
     console.warn = (...args) => logs.warn.push(args.join(' '));
 
     // The hourly persists refresh would otherwise hold the process open for an hour; every other
-    // timer, including the event loop yields inside the cascading delete, stays real. The
-    // callback it was scheduled with is kept so the refresh can be stepped by hand, the same way
-    // the expiry pass is.
+    // timer stays real. The callback it was scheduled with is kept so the refresh can be stepped
+    // by hand, the same way the expiry pass is.
     const realSetTimeout = global.setTimeout;
     let hourlyRefresh;
     let hourlyScheduleCount = 0;
