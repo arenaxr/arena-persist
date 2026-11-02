@@ -9,7 +9,8 @@ const {clearIntervalAsync, setIntervalAsync} = require('set-interval-async/dynam
 
 const {runExpress} = require('./express_server');
 const {buildForget, deleteObjectAndDescendants} = require('./cascade');
-const {asyncForEach, asyncMapForEach, escapeRegExp, filterNulls, flatten} = require('./utils');
+const {asyncForEach, asyncMapForEach, escapeRegExp, filterNulls, flatten,
+    liveObjectsOnly} = require('./utils');
 const {TOPICS} = require('./topics');
 
 let jwk;
@@ -598,20 +599,26 @@ async function handleGetPersist(arenaObj, topic) {
     const query = {
         sceneId: arenaObj.sceneId,
         namespace: arenaObj.namespace,
-        expireAt: {$not: {$lt: now}},
+        ...liveObjectsOnly(now),
     };
     if (arenaObj.attributes.type) {
         query.type = arenaObj.attributes.type;
     }
-    ArenaObject.find(query,
-        {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0}).
-        then((records) => {
-            mqttClient.publish(topic, JSON.stringify({
-                action: 'returnPersist',
-                object_id: arenaObj.object_id,
-                data: records,
-            }));
-        });
+    // Awaited, so the handler's promise represents the work and a rejection from either the query
+    // or the publish has somewhere to land. Unawaited, this resolved before the query did and a
+    // rejection was an unhandled rejection with no caller able to catch it: arenaMsgHandler is
+    // invoked by the MQTT client, not by anything holding a try.
+    try {
+        const records = await ArenaObject.find(query,
+            {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0});
+        await mqttClient.publish(topic, JSON.stringify({
+            action: 'returnPersist',
+            object_id: arenaObj.object_id,
+            data: records,
+        }));
+    } catch (err) {
+        console.log('Error answering getPersist for', arenaObj.object_id, err);
+    }
 }
 
 /**
