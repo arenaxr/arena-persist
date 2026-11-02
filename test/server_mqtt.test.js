@@ -617,7 +617,7 @@ describe('arenaMsgHandler update', () => {
         assert.deepEqual(mutation, {
             $set: {'attributes.material.color': '#ff0000'},
             $unset: {'attributes.clickable': ''},
-        });
+        }, 'a message with no ttl states no deadline, so expireAt appears in neither half');
         assert.equal(db.of('findOneAndReplace').length, 0);
     });
 
@@ -646,14 +646,190 @@ describe('arenaMsgHandler update', () => {
         assert.equal(db.of('findOneAndUpdate').length, 1);
     });
 
-    it('starts tracking expiry when an update introduces a ttl', async () => {
+    it('writes the deadline to the document and tracks it when an update introduces a ttl', async () => {
         const harness = await service();
         harness.persists.add(key('later'));
         await deliver(harness, objectTopic('later'), update({object_id: 'later', ttl: -1}));
+        const [, mutation] = db.of('findOneAndUpdate')[0];
+        assert.ok(mutation.$set.expireAt instanceof Date,
+            'the deadline has to reach the document, or only this process knows about it');
         await harness.publishExpires();
         assert.deepEqual(harness.published.map(({payload}) => JSON.parse(payload)), [
             {object_id: 'later', action: 'delete'},
         ]);
+    });
+
+    /**
+     * Runs one expiry pass and drops what it produced, so a test starts from a drained
+     * expirations map. That map is module state and outlives a single test.
+     * @param {Object} harness - The harness from service().
+     * @return {Promise<void>} Settles once the drain is done.
+     */
+    const drainExpiries = async (harness) => {
+        await harness.publishExpires();
+        db.reset();
+        harness.published.length = 0;
+        harness.persists.clear();
+    };
+
+    /**
+     * Retires an object's tracked deadline once a test is done asserting on it.
+     *
+     * publishExpires only drops entries that are already due, so draining cannot clear a
+     * deadline that is still in the future: it has to be moved into the past first. A test
+     * that asserted on a future deadline and then left it behind would arm the expiry pass
+     * against a later test, which asserts on a map it never touched.
+     * @param {Object} harness - The harness from service().
+     * @param {string} objectId - object_id of the object to stop tracking.
+     * @return {Promise<void>} Settles once nothing is tracked for it.
+     */
+    const retireExpiry = async (harness, objectId) => {
+        await deliver(harness, objectTopic(objectId), update({object_id: objectId, ttl: -1}));
+        await drainExpiries(harness);
+    };
+
+    it('sets the expiry alongside the attribute changes when an update carries a ttl', async () => {
+        const harness = await service();
+        harness.persists.add(key('box-1'));
+        const before = Date.now();
+        await deliver(harness, objectTopic('box-1'), update({ttl: 30}));
+        const after = Date.now();
+        const [, mutation] = db.of('findOneAndUpdate')[0];
+        assert.deepEqual(Object.keys(mutation.$set).sort(),
+            ['attributes.material.color', 'expireAt'],
+            'the ttl travels in the same mutation as the attributes it came with');
+        assert.ok(mutation.$set.expireAt.getTime() >= before + 30000, 'the expiry is a ttl away');
+        assert.ok(mutation.$set.expireAt.getTime() <= after + 30000, 'and no further');
+        assert.deepEqual(mutation.$unset, {'attributes.clickable': ''},
+            'the nulled attribute is still cleared');
+        await retireExpiry(harness, 'box-1');
+    });
+
+    it('leaves a stored expiry alone when a later update carries no ttl', async () => {
+        const harness = await service();
+        await drainExpiries(harness);
+        harness.persists.add(key('keeps-ttl'));
+        await deliver(harness, objectTopic('keeps-ttl'), update({object_id: 'keeps-ttl', ttl: -1}));
+        const [, given] = db.of('findOneAndUpdate')[0];
+        assert.ok(given.$set.expireAt instanceof Date, 'the document now carries a deadline');
+        await deliver(harness, objectTopic('keeps-ttl'), update({object_id: 'keeps-ttl'}));
+        const [, silent] = db.of('findOneAndUpdate')[1];
+        assert.equal('expireAt' in silent.$set, false, 'omitting a ttl states no new deadline');
+        assert.equal('expireAt' in silent.$unset, false, 'and is not a request to clear the old one');
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published.map(({payload}) => JSON.parse(payload)),
+            [{object_id: 'keeps-ttl', action: 'delete'}],
+            'the deadline the ttl update set is still the one being followed');
+    });
+
+    it('replaces the document with a new expiry when an overwrite carries a ttl', async () => {
+        const harness = await service();
+        await drainExpiries(harness);
+        harness.persists.add(key('replaced-ttl'));
+        const before = Date.now();
+        await deliver(harness, objectTopic('replaced-ttl'),
+            update({object_id: 'replaced-ttl', ttl: 30, overwrite: true}));
+        const after = Date.now();
+        const [, doc] = db.of('findOneAndReplace')[0];
+        assert.ok(doc.expireAt instanceof Date, 'the replacement carries the deadline');
+        assert.ok(doc.expireAt.getTime() >= before + 30000, 'the expiry is a ttl away');
+        assert.ok(doc.expireAt.getTime() <= after + 30000, 'and no further');
+        assert.equal(db.of('findOneAndUpdate').length, 0);
+        await retireExpiry(harness, 'replaced-ttl');
+    });
+
+    it('removes a stored expiry when an overwrite carries no ttl', async () => {
+        const harness = await service();
+        await drainExpiries(harness);
+        harness.persists.add(key('cleared-ttl'));
+        await deliver(harness, objectTopic('cleared-ttl'), update({object_id: 'cleared-ttl', ttl: -1}));
+        await deliver(harness, objectTopic('cleared-ttl'),
+            update({object_id: 'cleared-ttl', overwrite: true}));
+        const [, doc] = db.of('findOneAndReplace')[0];
+        assert.equal('expireAt' in doc, false,
+            'the whole message replaces the object, so the expiry field is genuinely gone');
+        assert.equal(db.of('findOne').length, 0,
+            'a replacement known to have landed settles it, with no read-back to pay for');
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published, [],
+            'an object the overwrite made permanent must not still be expired from memory');
+    });
+
+    it('moves the deadline when a ttl update changes an existing expiry', async () => {
+        const harness = await service();
+        await drainExpiries(harness);
+        harness.persists.add(key('extended'));
+        await deliver(harness, objectTopic('extended'), update({object_id: 'extended', ttl: -1}));
+        const [, first] = db.of('findOneAndUpdate')[0];
+        await deliver(harness, objectTopic('extended'), update({object_id: 'extended', ttl: 3600}));
+        const [, second] = db.of('findOneAndUpdate')[1];
+        assert.ok(second.$set.expireAt.getTime() > first.$set.expireAt.getTime(),
+            'the document carries the deadline the newer ttl asked for');
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published, [],
+            'and the tracked deadline moved with it, so the object is no longer due');
+        await retireExpiry(harness, 'extended');
+    });
+
+    it('stops tracking a deadline when a no-ttl overwrite rejects after landing', async () => {
+        const harness = await service();
+        await drainExpiries(harness);
+        harness.persists.add(key('lost-ack'));
+        await deliver(harness, objectTopic('lost-ack'), update({object_id: 'lost-ack', ttl: -1}));
+        // The replacement applied and only its acknowledgement was lost, so the document is
+        // stored with no expireAt at all: permanent. The read-back is what says so - the
+        // rejection on its own looks exactly like a write that never happened.
+        db.failures.findOneAndReplace = new Error('connection closed after the write applied');
+        db.findOneRows.push({object_id: 'lost-ack', namespace: NAMESPACE, sceneId: SCENE});
+        await deliver(harness, objectTopic('lost-ack'),
+            update({object_id: 'lost-ack', overwrite: true}));
+        delete db.failures.findOneAndReplace;
+        assert.equal(db.of('findOne').length, 1,
+            'the rejection alone says nothing, so the document itself has to be read back');
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published, [],
+            'the overwrite made the object permanent, so the deadline it replaced must not fire');
+    });
+
+    it('keeps following a stored deadline when a no-ttl overwrite rejects without landing',
+        async () => {
+            const harness = await service();
+            await drainExpiries(harness);
+            harness.persists.add(key('unreplaced-keeps'));
+            db.failures.findOneAndReplace = new Error('not primary');
+            db.findOneRows.push({
+                object_id: 'unreplaced-keeps', namespace: NAMESPACE, sceneId: SCENE,
+                expireAt: new Date(Date.now() - 1000),
+            });
+            await deliver(harness, objectTopic('unreplaced-keeps'),
+                update({object_id: 'unreplaced-keeps', overwrite: true}));
+            delete db.failures.findOneAndReplace;
+            harness.published.length = 0;
+            await harness.publishExpires();
+            assert.deepEqual(harness.published.map(({payload}) => JSON.parse(payload)),
+                [{object_id: 'unreplaced-keeps', action: 'delete'}],
+                'the replacement never landed, so the deadline the document still carries stands');
+        });
+
+    it('stops tracking a deadline when a no-ttl overwrite matches no document', async () => {
+        const harness = await service();
+        await drainExpiries(harness);
+        harness.persists.add(key('stale-overwrite'));
+        await deliver(harness, objectTopic('stale-overwrite'),
+            update({object_id: 'stale-overwrite', ttl: -1}));
+        // The stale-key state: the replace matches nothing and resolves with no document, and
+        // the read-back finds nothing either. There is no object left to expire.
+        db.writeResults.findOneAndReplace = [null];
+        await deliver(harness, objectTopic('stale-overwrite'),
+            update({object_id: 'stale-overwrite', overwrite: true}));
+        harness.published.length = 0;
+        await harness.publishExpires();
+        assert.deepEqual(harness.published, [],
+            'nothing is there to expire, so no delete should go out for it');
     });
 
     it('does not track expiry when the write for a ttl update fails', async () => {

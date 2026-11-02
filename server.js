@@ -471,6 +471,17 @@ async function arenaMsgHandler(topic, message) {
                 } else {
                     const [sets, unSets] = filterNulls(
                         flatten({attributes: insertObj.attributes}));
+                    // A ttl on the message states a new deadline, so it goes into the same
+                    // mutation as the attribute changes. Without this the deadline existed only
+                    // in the expirations map, so nothing survived a restart and mongo's TTL
+                    // monitor had no expireAt to act on. Omitting a ttl is not a request to
+                    // clear one: a ttl is stated only when it changes, so a message that
+                    // carries none leaves whatever expireAt the document already holds.
+                    // Replacing the document is the way to remove an expiry, which is the
+                    // overwrite branch above.
+                    if (arenaObj.expireAt) {
+                        sets.expireAt = arenaObj.expireAt;
+                    }
                     try {
                         const updated = await ArenaObject.findOneAndUpdate(
                             {
@@ -507,6 +518,36 @@ async function arenaMsgHandler(topic, message) {
                         const stored = await findStoredObject(arenaObj);
                         if (stored && stored.expireAt) {
                             expirations.set(objKey(stored), stored);
+                        }
+                    }
+                } else if (msgJSON.overwrite) {
+                    // An overwrite replaces the whole document, so a replacement carrying no
+                    // expireAt has taken the stored deadline away and there is nothing left to
+                    // expire: stop following it, or the expiry pass would delete an object
+                    // this message just made permanent.
+                    //
+                    // A rejected or unmatched write does not settle that either way, so it is
+                    // reconciled against the database the same way the ttl branch above is.
+                    // The replacement may have landed with only its acknowledgement lost, in
+                    // which case the deadline is already gone and the entry left behind would
+                    // fire against a document that is now permanent; or the key may be stale
+                    // with no document to expire at all. Either way what the database holds
+                    // decides, and an answer that cannot be read counts as nothing to follow:
+                    // over-tracking publishes a delete for an object that is still there and
+                    // sweeps its children, while under-tracking only leaves the deadline to
+                    // mongo's TTL monitor, which is exactly what writing expireAt to the
+                    // document gives it.
+                    //
+                    // An update without overwrite never changes expireAt, so whatever is
+                    // tracked for it still stands.
+                    if (written) {
+                        expirations.delete(objKey(arenaObj));
+                    } else {
+                        const stored = await findStoredObject(arenaObj);
+                        if (stored && stored.expireAt) {
+                            expirations.set(objKey(stored), stored);
+                        } else {
+                            expirations.delete(objKey(arenaObj));
                         }
                     }
                 }
