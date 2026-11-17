@@ -69,6 +69,16 @@ exports.runExpress = async ({
         res.json('You have not been granted write access');
     };
 
+    // A rejected query must answer the client. Without this, Node's default
+    // --unhandled-rejections=throw turns one transient database error into an uncaught exception
+    // that ends the process; suppressing that instead leaves the request hanging with no response.
+    // Same three steps the POST clone route's catch already performs.
+    const queryError = (res, err) => {
+        res.status(500);
+        res.json();
+        console.log(err);
+    };
+
     const matchJWT = (topic, rights) => {
         const len = rights.length;
         let valid = false;
@@ -161,7 +171,7 @@ exports.runExpress = async ({
         }
         ArenaObject.distinct('namespace').then((namespaces) => {
             return res.json(namespaces);
-        });
+        }).catch((err) => queryError(res, err));
     });
 
     app.get('/persist/\\!allscenes', (req, res) => {
@@ -192,7 +202,7 @@ exports.runExpress = async ({
         ]).exec().then((scenes) => {
             return res.json(
                 scenes.map((s) => s._id.namespace + '/' + s._id.sceneId));
-        });
+        }).catch((err) => queryError(res, err));
     });
 
     app.get('/persist/:namespace/\\!allscenes', (req, res) => {
@@ -227,7 +237,7 @@ exports.runExpress = async ({
             },
         ]).exec().then((scenes) => {
             return res.json(scenes.map((s) => `${namespace}/${s._id.sceneId}`));
-        });
+        }).catch((err) => queryError(res, err));
     });
 
     app.post('/persist/:namespace/:sceneId', checkJWTPubs, async (req, res) => {
@@ -307,7 +317,8 @@ exports.runExpress = async ({
             sort('attributes.parent').
             then((records) => {
                 res.json(records);
-            });
+            }).
+            catch((err) => queryError(res, err));
     });
 
     app.delete('/persist/:namespace/:sceneId', checkJWTPubs, (req, res) => {
@@ -317,7 +328,7 @@ exports.runExpress = async ({
         };
         ArenaObject.deleteMany(query).then((result) => {
             res.json({result: 'success', deletedCount: result.deletedCount});
-        });
+        }).catch((err) => queryError(res, err));
         for (const key of persists) {
             if (key.startsWith(`${query.namespace}|${query.sceneId}|`)) {
                 // Not persists.delete: a resync of the set may already be in flight, and its
@@ -338,7 +349,7 @@ exports.runExpress = async ({
             }, {_id: 0, realm: 0, namespace: 0, sceneId: 0, __v: 0},
             ).then((msgs) => {
                 res.json(msgs);
-            });
+            }).catch((err) => queryError(res, err));
         });
 
     app.get('/persist/health', (req, res) => {
