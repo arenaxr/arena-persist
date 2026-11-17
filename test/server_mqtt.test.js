@@ -1129,6 +1129,171 @@ describe('loadTemplate', () => {
     });
 });
 
+describe('the service\'s own publishes', () => {
+    // The service subscribes to realm/s/+/+/o/+/+ and publishes every object it creates itself on
+    // that same shape, with its own client id in the userClient token. MQTT 3.1.1 has no way for a
+    // subscription to exclude its own publishes, so a real broker delivers each of those messages
+    // straight back to the handler. The fake client here does not echo, so these tests deliver the
+    // echo by hand, on exactly the topic createArenaObj publishes on.
+    const TEMPLATE_NS = 'templates';
+    const TEMPLATE_SCENE = 'store';
+    const INSTANCE = 'shelf';
+    const PREFIX = `${TEMPLATE_NS}|${TEMPLATE_SCENE}::${INSTANCE}`;
+    const TARGET_NS = 'public';
+    const TARGET_SCENE = 'atrium';
+
+    /**
+     * Delivers a message on the topic the service publishes on, as the broker echoes it back.
+     * @param {Object} harness - The harness from service().
+     * @param {string} objectId - object_id the message is about.
+     * @param {Object} payload - The message payload.
+     * @return {Promise<void>} Settles once the service has finished handling the message.
+     */
+    const echo = async (harness, objectId, payload) => deliver(
+        harness,
+        objectTopic(objectId, {userClient: harness.clientOptions.clientId}),
+        payload);
+
+    /**
+     * Instantiates a one-object template into the target scene.
+     * @param {Object} harness - The harness from service().
+     * @param {Object} [opts] - loadTemplate options.
+     * @return {Promise<void>} Settles once every object has been written and announced.
+     */
+    const clone = async (harness, opts) => {
+        db.findRows.push([{object_id: 'shelf-1', type: 'object', attributes: {}}]);
+        await harness.loadTemplate(
+            INSTANCE, REALM, TEMPLATE_NS, TEMPLATE_SCENE, TARGET_NS, TARGET_SCENE, opts);
+    };
+
+    it('ignores a create it published itself, instead of writing the object a second time', async () => {
+        const harness = await service();
+        await echo(harness, 'box-1', {
+            object_id: 'box-1', action: 'create', type: 'object', persist: true, data: {},
+        });
+        assert.deepEqual(db.calls, [], 'an echoed create is not a second write');
+        assert.deepEqual([...harness.persists], [], 'and there is nothing left for it to record');
+    });
+
+    it('ignores an echoed delete of its own, which would otherwise cascade', async () => {
+        const harness = await service();
+        harness.persists.add(key('box-1'));
+        await echo(harness, 'box-1', {object_id: 'box-1', action: 'delete'});
+        assert.deepEqual(db.calls, [], 'an echoed delete does not start a cascade');
+    });
+
+    it('still acts on the same create when it comes from a client', async () => {
+        const harness = await service();
+        await deliver(harness, objectTopic('box-1'), {
+            object_id: 'box-1', action: 'create', type: 'object', persist: true, data: {},
+        });
+        assert.equal(db.of('findOneAndUpdate').length, 1, 'a client create is written as before');
+        assert.deepEqual([...harness.persists], [key('box-1')]);
+    });
+
+    it('remembers a cloned object as persisted from the write itself', async () => {
+        const harness = await service();
+        await clone(harness, {persist: true});
+        assert.deepEqual([...harness.persists].sort(), [
+            key(PREFIX, TARGET_NS, TARGET_SCENE),
+            key(`${PREFIX}::shelf-1`, TARGET_NS, TARGET_SCENE),
+        ].sort(), 'the container and the cloned object are both known to be persisted');
+    });
+
+    it('accepts a later update for a cloned object', async () => {
+        const harness = await service();
+        await clone(harness, {persist: true});
+        db.reset();
+        const objectId = `${PREFIX}::shelf-1`;
+        await deliver(harness, objectTopic(objectId, {namespace: TARGET_NS, sceneId: TARGET_SCENE}), {
+            object_id: objectId, action: 'update', type: 'object', persist: true,
+            data: {material: {color: '#00ff00'}},
+        });
+        assert.equal(db.of('findOneAndUpdate').length, 1,
+            'the update passes the persists guard without the echo having registered the clone');
+    });
+
+    it('accepts a later delete for a cloned object', async () => {
+        const harness = await service();
+        await clone(harness, {persist: true});
+        db.reset();
+        const objectId = `${PREFIX}::shelf-1`;
+        await deliver(harness, objectTopic(objectId, {namespace: TARGET_NS, sceneId: TARGET_SCENE}), {
+            object_id: objectId, action: 'delete',
+        });
+        assert.ok(db.of('deleteOne').length >= 1, 'the delete passes the persists guard');
+    });
+
+    it('does not remember a clone the caller did not ask to persist', async () => {
+        const harness = await service();
+        await clone(harness, {});
+        assert.deepEqual([...harness.persists], [],
+            'an unpersisted clone is no more remembered than an unpersisted create');
+    });
+
+    it('remembers a ttl-only clone and tracks its expiry, though nothing marked it to persist',
+        async () => {
+            const harness = await service();
+            db.findRows.push([{object_id: 'shelf-1', type: 'object', attributes: {ttl: -1}}]);
+            await harness.loadTemplate(
+                INSTANCE, REALM, TEMPLATE_NS, TEMPLATE_SCENE, TARGET_NS, TARGET_SCENE,
+                {noParent: true, noPrefix: true});
+            assert.deepEqual([...harness.persists], [key('shelf-1', TARGET_NS, TARGET_SCENE)],
+                'a ttl is what makes the write persisted, so the key belongs in persists');
+            harness.published.length = 0;
+            await harness.publishExpires();
+            assert.deepEqual(harness.published.map(({payload}) => JSON.parse(payload)), [
+                {object_id: 'shelf-1', action: 'delete'},
+            ], 'and the expiry pass can still find it');
+        });
+
+    it('writes no document id when cloning, so an upsert onto an existing object is not rejected',
+        async () => {
+            const harness = await service();
+            await clone(harness, {persist: true, noParent: true, noPrefix: true});
+            const [, doc] = db.of('findOneAndUpdate')[0];
+            assert.equal('_id' in doc, false,
+                'a fresh _id in the update document is what mongo rejects with ImmutableField');
+        });
+
+    it('remembers a cloned object from a read-back when its write rejects but the document is there',
+        async () => {
+            const harness = await service();
+            db.failures.findOneAndUpdate = new Error('ImmutableField: the _id field is immutable');
+            db.findOneRows.push({object_id: 'shelf-1', namespace: TARGET_NS, sceneId: TARGET_SCENE});
+            await clone(harness, {persist: true, noParent: true, noPrefix: true});
+            assert.equal(db.of('findOne').length, 1, 'a rejected write is followed by a read-back');
+            assert.deepEqual([...harness.persists], [key('shelf-1', TARGET_NS, TARGET_SCENE)],
+                'a document stored despite the rejection is still remembered');
+        });
+
+    it('remembers nothing when a rejected write left no document behind', async () => {
+        const harness = await service();
+        db.failures.findOneAndUpdate = new Error('connection reset by peer');
+        await clone(harness, {persist: true, noParent: true, noPrefix: true});
+        assert.equal(db.of('findOne').length, 1, 'the read-back is attempted either way');
+        assert.deepEqual([...harness.persists], [],
+            'a key is never invented for an object that is not there');
+        assert.ok(logs.log.some((line) => line.includes('Error creating arena object')),
+            'and the failed write is logged');
+    });
+
+    it('drops its own message before building the mongoose document, not after', async () => {
+        // The gate is worth having because it runs before the document construction, which is the
+        // most expensive thing the handler does to a message it goes on to discard. Moving it
+        // after would leave every other assertion in this file passing and the reason for the
+        // change gone, and the two orders have no runtime observable to tell them apart - the
+        // handler returns silently either way - so the order is asserted against the source.
+        const source = require('node:fs').readFileSync(require.resolve('../server'), 'utf8');
+        const handler = source.slice(source.indexOf('async function arenaMsgHandler('));
+        const gate = handler.indexOf('mqttClientOptions.clientId');
+        const construction = handler.indexOf('new ArenaObject({');
+        assert.ok(gate !== -1, 'the handler compares the topic client id against its own');
+        assert.ok(construction !== -1, 'the handler builds a document');
+        assert.ok(gate < construction, 'and the comparison comes first');
+    });
+});
+
 describe('arenaMsgHandler loadTemplate', () => {
     // templateNamespace is deliberately not NAMESPACE, the namespace the request itself arrives
     // in: the two are separate arguments to loadTemplate and a fixture reusing one value for both

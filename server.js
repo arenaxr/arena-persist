@@ -361,6 +361,12 @@ async function findStoredObject(arenaObj) {
 }
 
 /**
+ * Actions the message handler acts on. Every other action reaches the default case of the
+ * switch below and is discarded, so it can be discarded before any work is done for it.
+ */
+const HANDLED_ACTIONS = new Set(['create', 'update', 'delete', 'loadTemplate', 'getPersist']);
+
+/**
  * Handles incoming mqtt messages to update persist
  * @param {string} topic
  * @param {string} message
@@ -387,6 +393,34 @@ async function arenaMsgHandler(topic, message) {
         // Verify topicObjId is same as json payload id
         const topicObjId = topicSplit[TOPICS.TOKENS.UUID];
         if (msgJSON.object_id !== topicObjId) {
+            return;
+        }
+
+        // Whether this message is one the service will act on at all. Both questions below are
+        // answerable from the topic and the payload alone, and constructing the document is the
+        // most expensive thing this handler does to a message it then throws away, so they are
+        // asked first and the document is built behind them.
+
+        // A message the service published itself, delivered back to it because MQTT 3.1.1 has no
+        // way for a subscription to exclude its own publishes and so the broker matches
+        // createArenaObj's publish against the service's own filter. Acting on it upserts every
+        // cloned object a second time. createArenaObj remembers what it wrote itself, so nothing
+        // depends on this message coming back.
+        if (topicSplit[TOPICS.TOKENS.USER_CLIENT] === mqttClientOptions.clientId) {
+            return;
+        }
+
+        // A message the switch below would discard anyway: an action the service does not handle,
+        // or a create/update that is not asking to be persisted. The create branch requires
+        // persist to be exactly true and the update branch accepts any truthy value, so the two
+        // are asked separately rather than sharing one test.
+        if (!HANDLED_ACTIONS.has(msgJSON.action)) {
+            return;
+        }
+        if (msgJSON.action === 'create' && msgJSON.persist !== true) {
+            return;
+        }
+        if (msgJSON.action === 'update' && !(msgJSON.persist && msgJSON.persist !== false)) {
             return;
         }
 
@@ -704,6 +738,13 @@ const createArenaObj = async (
         namespace: namespace,
         sceneId: sceneId,
     }).toObject();
+    // The generated document id is never written. It is a fresh ObjectId on every call, so an
+    // upsert carrying it against a document that already exists asks mongo to change that
+    // document's _id, which it refuses with ImmutableField - and a clone into a scene already
+    // holding one of these ids is exactly that case. The create branch of arenaMsgHandler drops
+    // it from its own write document for the same reason.
+    delete arenaObj._id;
+    let stored = null;
     try {
         await ArenaObject.findOneAndUpdate({
             namespace: namespace,
@@ -713,8 +754,26 @@ const createArenaObj = async (
         }, arenaObj, {
             upsert: true,
         });
+        stored = arenaObj;
     } catch (err) {
         console.log('Error creating arena object', object_id, err);
+        stored = await findStoredObject(arenaObj);
+    }
+    // The object to remember as persisted, if any: the one just written, or - when the write
+    // rejected but the document turns out to be stored anyway - the document that is stored.
+    //
+    // Both of those jobs used to be done by the service's own publish coming back to it and
+    // being handled as an ordinary create. That echo was the only thing that put an object
+    // written here into persists, and it was equally the only thing that repaired the key after
+    // a write rejected. Dropping the echo without both halves would leave a stored object
+    // unremembered, and every later update and delete for it silently dropped until the hourly
+    // refresh - which is why the rejection is followed by the same read-back the create branch
+    // of arenaMsgHandler does, rather than read as proof that nothing was written.
+    //
+    // Bookkeeping runs after the try, never inside it: a throw from it would otherwise be caught
+    // by the write's catch and reported as a failed write.
+    if (stored && msg.persist) {
+        rememberPersisted(stored);
     }
     await mqttClient.publish(TOPICS.PUBLISH.SCENE_OBJECTS.formatStr({
         nameSpace: namespace,
