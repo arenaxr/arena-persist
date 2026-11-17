@@ -8,7 +8,8 @@
 const assert = require('node:assert/strict');
 const {describe, it} = require('node:test');
 
-const {asyncForEach, asyncMapForEach, escapeRegExp, filterNulls, flatten} = require('../utils');
+const {asyncForEach, asyncMapForEach, escapeRegExp, filterNulls, flatten,
+    liveObjectsOnly} = require('../utils');
 
 /**
  * Resolves after the given delay, used to stagger async callbacks in ordering tests.
@@ -471,5 +472,36 @@ describe('escapeRegExp', () => {
         // Unescaped, '^public|store::shelf::' would match anything starting with 'public'.
         assert.ok(!anchored.test('public|lobby|other'));
         assert.ok(!anchored.test('publicX'));
+    });
+});
+
+describe('liveObjectsOnly', () => {
+    it('keeps an object with no deadline and one whose deadline is still ahead', () => {
+        const now = new Date('2026-08-27T12:00:00Z');
+        assert.deepEqual(liveObjectsOnly(now), {$or: [{expireAt: null}, {expireAt: {$gte: now}}]});
+    });
+
+    it('matches a null expireAt as well as a missing one, which $exists: false would not', () => {
+        // The form this replaced, {expireAt: {$not: {$lt: now}}}, matched three document shapes:
+        // no expireAt, an expireAt of null, and an expireAt at or after the cutoff. $lt compares
+        // only inside one BSON type bracket, so it never matches null and its negation is true
+        // there. An equality against null matches both null and missing, so this fragment keeps
+        // the same three shapes; a {$exists: false} branch would keep only two and would stop
+        // serving a document whose expireAt is null. Checked against MongoDB 8.0.29 through this
+        // repo's schema: {$not: {$lt: now}} and this fragment both return the absent, null and
+        // future documents, while the $exists form returns only absent and future.
+        const [missingOrNull, notYetDue] = liveObjectsOnly(new Date()).$or;
+        assert.deepEqual(missingOrNull, {expireAt: null},
+            'an equality against null, so a stored null deadline is still served');
+        assert.deepEqual(Object.keys(notYetDue.expireAt), ['$gte'],
+            'and the dated branch is a plain range, which an index can bound');
+        assert.equal(JSON.stringify(liveObjectsOnly(new Date())).includes('$exists'), false);
+    });
+
+    it('carries the cutoff it was given, so each request reads as of its own time', () => {
+        const early = new Date('2026-01-01T00:00:00Z');
+        const late = new Date('2026-12-31T00:00:00Z');
+        assert.equal(liveObjectsOnly(early).$or[1].expireAt.$gte, early);
+        assert.equal(liveObjectsOnly(late).$or[1].expireAt.$gte, late);
     });
 });
