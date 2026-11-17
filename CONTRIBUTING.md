@@ -23,7 +23,7 @@ To develop the `arena-persist` locally:
 
 ## Testing
 
-The unit tests in `test/` run **offline** with Node's built-in test runner — no MongoDB, no MQTT broker, and none of the `arena-services-docker` `.env` configuration above are required.
+The unit tests in `test/` run **offline** with Node's built-in test runner — no MongoDB, no MQTT broker, and none of the `arena-services-docker` `.env` configuration above are required. `node --test` and `--test-name-pattern` need a reasonably recent Node; CI and the Dockerfile both track the current LTS (`lts/*`).
 
 1. Install dependencies: `npm ci`
 2. Run the full suite, exactly as CI does: `npm test`
@@ -36,9 +36,9 @@ node --test --test-name-pattern='flatten' test/utils.test.js  # one suite or tes
 ```
 
 > [!CAUTION]
-> Do not skip `npm ci` — `npm test` will still run, but files with unmet `require`s never load, so you get a silently truncated suite and a handful of failures that look unrelated to your change.
+> Do not skip `npm ci` — `npm test` will still run, but files with unmet `require`s never load, so you get a truncated suite and a handful of failures that look unrelated to your change.
 
-New test files must match the runner's default pattern (`*.test.js`) or they are never discovered, and the suite stays green without them.
+Node's default glob includes `**/test/**/*.js`, so **any** `.js` file under `test/` is discovered and run, whatever it is named. Still name new files `*.test.js` — it is the convention every existing file in `test/` follows, not a discovery requirement. The suffix only becomes load-bearing *outside* `test/`, where a file without it is never picked up.
 
 ## Code Style
 - Follow standard JavaScript formatting guidelines.
