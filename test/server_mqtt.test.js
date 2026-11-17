@@ -939,23 +939,45 @@ describe('publishExpires', () => {
             ['private/office', 'public/lobby']);
     });
 
-    // Characterization, not endorsement: expiry deletes only the objects whose parent is the
-    // expired object, one level down, so a grandchild of an expired object is left in the database
-    // as an orphan. The cascading delete used for an explicit delete message is not used here.
-    // Pinned as current behaviour; fixing it is a separate change.
-    it('deletes only the direct children of an expired object, one level down', async () => {
+    // Expiry goes through the same cascading delete an explicit delete message uses, so these
+    // pin the two things the one-level deleteMany it replaced did not do: remove the expired
+    // document itself, and reach past the objects directly parented to it.
+    it('deletes the expired object itself first, scoped to its scene', async () => {
         const harness = await service();
         await drain(harness);
         await createWithTtl(harness, 'expired-parent', -1);
         db.reset();
         harness.published.length = 0;
         await harness.publishExpires();
-        assert.deepEqual(db.calls.map(([name]) => name), ['deleteMany'], 'a single unbounded query, no walk');
-        assert.deepEqual(db.of('deleteMany')[0], [{
-            'attributes.parent': 'expired-parent',
-            'namespace': NAMESPACE,
-            'sceneId': SCENE,
-        }]);
+        assert.equal(db.calls[0][0], 'deleteOne', 'the expired document goes before any other query');
+        assert.deepEqual(db.of('deleteOne')[0],
+            [{object_id: 'expired-parent', namespace: NAMESPACE, sceneId: SCENE}]);
+        const [byParent, projection, options] = db.of('find')[0];
+        assert.deepEqual(byParent['attributes.parent'], {$in: ['expired-parent']},
+            'and the children are walked rather than deleted by one unbounded query');
+        assert.deepEqual(projection, {object_id: 1, _id: 0}, 'only the ids are transferred');
+        assert.ok(options.limit > 0, 'and the query is bounded');
+        assert.deepEqual(db.of('deleteMany'), [], 'nothing is deleted by parent id');
+    });
+
+    it('walks past the direct children, so a grandchild is not left orphaned', async () => {
+        const harness = await service();
+        await drain(harness);
+        await createWithTtl(harness, 'expired-parent', -1);
+        for (const id of ['child', 'grandchild']) {
+            harness.persists.add(key(id));
+        }
+        db.reset();
+        harness.published.length = 0;
+        db.findRows.push([{object_id: 'child'}]);
+        db.findRows.push([{object_id: 'grandchild'}]);
+        await harness.publishExpires();
+        assert.deepEqual(db.of('find').map(([filter]) => filter['attributes.parent']),
+            [{$in: ['expired-parent']}, {$in: ['child']}, {$in: ['grandchild']}],
+            'every level below the expired object is queried');
+        assert.deepEqual(db.of('deleteMany').map(([filter]) => filter['object_id'].$in),
+            [['child'], ['grandchild']], 'and both levels are deleted by id');
+        assert.deepEqual([...harness.persists], [], 'so no descendant keeps its persists key');
     });
 });
 
