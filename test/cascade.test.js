@@ -214,14 +214,46 @@ describe('cascadeDeleteDescendants', () => {
             },
         });
 
-        // Queued before the walk starts: a walk that never yields would run to
-        // completion first and push this timer's marker last.
-        setTimeout(() => events.push('timer'), 0);
-        await cascadeDeleteDescendants(TARGET, recording, {batchSize: 1});
+        // Markers that re-arm themselves, so one lands on every event-loop turn for as long as
+        // the walk runs. Every handler here resolves on a microtask, so a walk that never yields
+        // drains to completion in one macrotask and no marker appears between any two deletes.
+        // Asserting a marker in *each* gap is what pins the yield to every batch: a single marker
+        // anywhere before the last delete is also satisfied by yielding once per level, or once
+        // per walk.
+        //
+        // One marker of each macrotask kind, because neither alone covers both yield primitives.
+        // A setTimeout(0) marker on its own cannot see an immediate yield: Node clamps it to
+        // ~1 ms, and the whole fake walk now finishes in microseconds, so it is not due yet when
+        // the loop passes through its timers phase. It used to be due only because the yield
+        // itself cost about a millisecond, which is why the marker this replaced was measuring
+        // the yield's latency rather than its yielding, and flaked. An immediate marker on its own cannot see
+        // a timer yield either: the timers phase precedes the check phase in every loop
+        // iteration, so the next batch is always already recorded by the time the marker runs.
+        // Either primitive satisfies the union of the two.
+        let marking = true;
+        const mark = (schedule) => {
+            const tick = () => {
+                events.push('mark');
+                if (marking) {
+                    schedule(tick);
+                }
+            };
+            schedule(tick);
+        };
+        mark(setImmediate);
+        mark((fn) => setTimeout(fn, 0));
+        try {
+            await cascadeDeleteDescendants(TARGET, recording, {batchSize: 1});
+        } finally {
+            marking = false;
+        }
 
         assert.strictEqual(events[0], 'delete:a');
-        assert.ok(events.indexOf('timer') < events.indexOf('delete:c'),
-            `expected the pending timer to run mid-walk, got ${events.join(' ')}`);
+        const gap = (from, to) => events.slice(events.indexOf(from) + 1, events.indexOf(to));
+        assert.ok(gap('delete:a', 'delete:b').includes('mark'),
+            `expected an event-loop turn between the first two batches, got ${events.join(' ')}`);
+        assert.ok(gap('delete:b', 'delete:c').includes('mark'),
+            `expected an event-loop turn between the second and third batches, got ${events.join(' ')}`);
     });
 
     describe('caps', () => {
