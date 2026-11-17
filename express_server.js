@@ -17,7 +17,8 @@ const VERIFY_OPTIONS = {
  * @param {object} mqttClient - async-mqtt client
  * @param {object} jwk - JWK from config
  * @param {object} mongooseConnection - mongoose.connection
- * @param {function} loadTemplate - function to clone templates
+ * @param {function} loadTemplate - function to clone templates, resolving to how many template
+ *     objects it read from the template scene and attempted to clone
  * @param {Set} persists - set of persisted objects
  * @param {function} [forgetPersist] - drops one key from persists, and keeps it dropped through a
  *     resync of that set that is already in flight. Defaults to a plain delete, which is correct
@@ -256,21 +257,25 @@ exports.runExpress = async ({
                 if (!matchJWT(srcTopic, req.jwtPayload.subs)) {
                     return tokenSubError(res);
                 }
-                const sourceObjectCount = await ArenaObject.countDocuments(
-                    {namespace: sourceNamespace, sceneId: sourceSceneId});
-                if (sourceObjectCount === 0) {
+                // exists(), not countDocuments(): the only question here is whether the scene
+                // holds anything, and an exact count has to walk every matching key to answer it.
+                if (!await ArenaObject.exists(
+                    {namespace: sourceNamespace, sceneId: sourceSceneId})) {
                     res.status(404);
                     return res.json('The source scene is empty!');
                 }
                 if (!allowNonEmptyTarget) {
-                    const targetObjectCount = await ArenaObject.countDocuments(
-                        {namespace: targetNamespace, sceneId: targetSceneId});
-                    if (targetObjectCount !== 0) {
+                    if (await ArenaObject.exists(
+                        {namespace: targetNamespace, sceneId: targetSceneId})) {
                         res.status(409);
                         return res.json('The target scene is not empty!');
                     }
                 }
-                await loadTemplate(
+                // The count reported back comes from loadTemplate's own read of the source scene,
+                // which it performs either way, rather than from a second pass over the same
+                // documents. It counts the objects the clone iterated, not the writes that
+                // succeeded: createArenaObj logs and swallows a failed upsert.
+                const objectsCloned = await loadTemplate(
                     'clone',
                     'realm',
                     sourceNamespace,
@@ -279,8 +284,7 @@ exports.runExpress = async ({
                     targetSceneId,
                     {noPrefix: true, persist: true, noParent: true},
                 );
-                return res.json(
-                    {result: 'success', objectsCloned: sourceObjectCount});
+                return res.json({result: 'success', objectsCloned});
             } else {
                 res.status(400);
                 return res.json('No valid action.');

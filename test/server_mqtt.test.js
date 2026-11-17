@@ -65,7 +65,7 @@ const db = {
     calls: [],
     findRows: [],
     findOneRows: [],
-    counts: [],
+    existing: [],
     failures: {},
     // Per-method queues of what a write resolves to, consumed one entry per call. A queued
     // null models a filter that matched no document: mongo's findAndModify answers that with
@@ -77,7 +77,7 @@ const db = {
         db.calls.length = 0;
         db.findRows.length = 0;
         db.findOneRows.length = 0;
-        db.counts.length = 0;
+        db.existing.length = 0;
         db.failures = {};
         db.writeResults = {};
     },
@@ -115,9 +115,16 @@ const recordQueries = (ArenaObject) => {
         record('findOne', args);
         return db.findOneRows.length ? db.findOneRows.shift() : null;
     };
+    ArenaObject.exists = async (...args) => {
+        record('exists', args);
+        // mongoose answers exists() with a document stub or null, never a boolean.
+        return (db.existing.length ? db.existing.shift() : false) ? {_id: 'some-id'} : null;
+    };
+    // Nothing counts any more; this stays recorded so a caller going back to counting shows up in
+    // db.calls as itself, rather than as a TypeError from a method the fake does not have.
     ArenaObject.countDocuments = async (...args) => {
         record('countDocuments', args);
-        return db.counts.length ? db.counts.shift() : 0;
+        return 99;
     };
     for (const name of ['findOneAndUpdate', 'findOneAndReplace', 'deleteOne', 'deleteMany']) {
         ArenaObject[name] = async (...args) => {
@@ -981,17 +988,27 @@ describe('loadTemplate', () => {
      * @param {Object} harness - The harness from service().
      * @param {Array<Object>} rows - Template objects the source scene holds.
      * @param {Object} [opts] - loadTemplate options.
-     * @return {Promise<Object>} The created documents in order, and the published messages.
+     * @return {Promise<Object>} The created documents in order, the published messages, and what
+     *     loadTemplate reported having cloned.
      */
     const instantiate = async (harness, rows, opts = {}) => {
         db.findRows.push(rows);
-        await harness.loadTemplate(INSTANCE, REALM, TEMPLATE_NS, TEMPLATE_SCENE, 'public', 'atrium', opts);
+        const cloned = await harness.loadTemplate(
+            INSTANCE, REALM, TEMPLATE_NS, TEMPLATE_SCENE, 'public', 'atrium', opts);
         return {
+            cloned,
             created: db.of('findOneAndUpdate').map(([, doc]) => doc),
             filters: db.of('findOneAndUpdate').map(([filter]) => filter),
             messages: harness.published.map(({topic, payload}) => ({topic, message: JSON.parse(payload)})),
         };
     };
+
+    it('reports how many template objects it cloned, off the read it already performed', async () => {
+        const harness = await service();
+        const {cloned} = await instantiate(harness, [templateObj('shelf-1'), templateObj('can-1')]);
+        assert.equal(cloned, 2, 'the two template objects, not counting the container it wraps them in');
+        assert.equal(db.of('exists').length, 0, 'and nothing is counted or probed to arrive at it');
+    });
 
     it('reads the template from the source scene', async () => {
         const harness = await service();
@@ -1155,18 +1172,18 @@ describe('arenaMsgHandler loadTemplate', () => {
 
     it('does nothing when the template scene is empty', async () => {
         const harness = await service();
-        db.counts.push(0);
+        db.existing.push(false);
         await deliver(harness, objectTopic('req-1'), request());
-        assert.deepEqual(db.calls.map(([name]) => name), ['countDocuments'], 'no objects are read or written');
+        assert.deepEqual(db.calls.map(([name]) => name), ['exists'], 'no objects are read or written');
         assert.deepEqual(harness.published, []);
     });
 
     it('does nothing when that instance of the template already exists in the target scene', async () => {
         const harness = await service();
-        db.counts.push(3); // template is not empty
-        db.counts.push(1); // but the instance is already there
+        db.existing.push(true); // template is not empty
+        db.existing.push(true); // but the instance is already there
         await deliver(harness, objectTopic('req-1'), request());
-        assert.deepEqual(db.of('countDocuments')[1], [{
+        assert.deepEqual(db.of('exists')[1], [{
             namespace: NAMESPACE,
             sceneId: SCENE,
             object_id: PREFIX,
@@ -1176,8 +1193,8 @@ describe('arenaMsgHandler loadTemplate', () => {
 
     it('instantiates the template into the scene the request came from', async () => {
         const harness = await service();
-        db.counts.push(3);
-        db.counts.push(0);
+        db.existing.push(true);
+        db.existing.push(false);
         db.findRows.push([{object_id: 'shelf-1', type: 'object', attributes: {}}]);
         await deliver(harness, objectTopic('req-1'), request({position: {x: 1, y: 0, z: 0}, ttl: 30}));
         const created = db.of('findOneAndUpdate').map(([, doc]) => doc);
@@ -1193,8 +1210,8 @@ describe('arenaMsgHandler loadTemplate', () => {
     it('places the container at the position and rotation requested, and only the container',
         async () => {
             const harness = await service();
-            db.counts.push(3);
-            db.counts.push(0);
+            db.existing.push(true);
+            db.existing.push(false);
             db.findRows.push([
                 {object_id: 'shelf-1', type: 'object', attributes: {}},
                 {object_id: 'can-1', type: 'object', attributes: {position: {x: 9, y: 9, z: 9}}},
@@ -1227,8 +1244,8 @@ describe('arenaMsgHandler loadTemplate', () => {
         db.reset();
         harness.published.length = 0;
         logs.log.length = 0;
-        db.counts.push(3);
-        db.counts.push(0);
+        db.existing.push(true);
+        db.existing.push(false);
         db.findRows.push([]);
         await deliver(harness, objectTopic('req-1'), request(attributes));
         return db.of('findOneAndUpdate')[0][1].attributes;
@@ -1284,8 +1301,8 @@ describe('arenaMsgHandler loadTemplate', () => {
     it('reads the template from the namespace and scene the request names, and names the instance from them',
         async () => {
             const harness = await service();
-            db.counts.push(3);
-            db.counts.push(0);
+            db.existing.push(true);
+            db.existing.push(false);
             db.findRows.push([{object_id: 'shelf-1', type: 'object', attributes: {}}]);
             await deliver(harness, objectTopic('req-1'), request());
             assert.deepEqual(db.of('find')[0], [{namespace: TEMPLATE_NS, sceneId: 'store'}],
@@ -1303,17 +1320,17 @@ describe('arenaMsgHandler loadTemplate', () => {
 
     it('refuses to instantiate the same template into the same scene twice', async () => {
         const harness = await service();
-        db.counts.push(3); // the template is not empty
-        db.counts.push(0); // and nothing of this instance is in the target scene yet
+        db.existing.push(true); // the template is not empty
+        db.existing.push(false); // and nothing of this instance is in the target scene yet
         db.findRows.push([{object_id: 'shelf-1', type: 'object', attributes: {}}]);
         await deliver(harness, objectTopic('req-1'), request());
         const [, container] = db.of('findOneAndUpdate')[0];
         db.reset();
         harness.published.length = 0;
-        db.counts.push(3); // the template is still there
-        db.counts.push(1); // and so is the instance the first request created
+        db.existing.push(true); // the template is still there
+        db.existing.push(true); // and so is the instance the first request created
         await deliver(harness, objectTopic('req-1'), request());
-        assert.deepEqual(db.of('countDocuments')[1], [{
+        assert.deepEqual(db.of('exists')[1], [{
             namespace: NAMESPACE,
             sceneId: SCENE,
             object_id: container.object_id,
@@ -1339,8 +1356,8 @@ describe('arenaMsgHandler loadTemplate', () => {
             const harness = await service();
             // Enough canned answers that the request would sail through every guard if it got
             // that far, and a template object waiting to be cloned if it reached the lookup.
-            db.counts.push(3);
-            db.counts.push(0);
+            db.existing.push(true);
+            db.existing.push(false);
             db.findRows.push([{object_id: 'shelf-1', type: 'object', attributes: {}}]);
             await deliver(harness, objectTopic('req-1'), request(missing));
             assert.deepEqual(db.calls, [], 'nothing is counted, nothing is read and nothing is written');
